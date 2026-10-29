@@ -20,6 +20,8 @@ import numpy as np
 class Meter:
     beats_per_bar: int
     compound: bool
+    swing: bool = False  # swung eighths, written straight as jazz charts do
+    subdivision: int = 4  # finest straight note per beat: 4 = sixteenths, 2 = eighths
 
     @property
     def beat_ql(self) -> Fraction:
@@ -45,19 +47,41 @@ def _fractions(notes, beats) -> np.ndarray:
     return x - np.floor(x)
 
 
-def detect_meter(notes, beats: list[float], beats_per_bar: int, compound: bool = False) -> Meter:
-    """Simple or compound time. The beat tracker may already know (it counted eighth
-    notes in groups of three); otherwise look at where off-beat onsets land in the beat."""
+def detect_meter(notes, beats: list[float], beats_per_bar: int, compound: bool = False, bpm: float = 100) -> Meter:
+    meter = _meter(notes, beats, beats_per_bar, compound)
+    # Fast tunes read better in eighths: sixteenths at 200 bpm are mostly jitter.
+    if not meter.compound and (bpm >= 200 or (meter.swing and bpm >= 130)):
+        meter.subdivision = 2
+    return meter
+
+
+def _meter(notes, beats: list[float], beats_per_bar: int, compound: bool) -> Meter:
+    """Simple, compound or swung time, from where off-beat onsets land inside the beat.
+
+    The beat tracker may already know a meter is compound (it counted eighth notes in
+    threes). Otherwise: onsets on both 1/3 and 2/3 of the beat throughout mean compound
+    time; a long-short pair (the off-beat late, around 0.6-0.75 of the beat) with few
+    onsets on 1/3 means swing, which jazz writes as plain eighth notes.
+    """
     if beats_per_bar not in (2, 3, 4):
         beats_per_bar = 4
     if compound or not notes:
         return Meter(beats_per_bar, compound)
     f = _fractions(notes, beats)
-    near = lambda targets: sum(np.min(np.abs(f[:, None] - np.array(targets)[None, :]), axis=1) < 0.06)  # noqa: E731
-    triplet = near([1 / 3, 2 / 3])
-    duple = near([0.25, 0.5, 0.75])
-    # Occasional triplets stay triplets in simple time; only a steady three-way split is compound.
-    return Meter(beats_per_bar, bool(triplet > 3 * duple and triplet > 0.25 * len(f)))
+    count = lambda lo, hi: int(np.sum((f > lo) & (f < hi)))  # noqa: E731
+    one_third = count(0.28, 0.39)
+    swung = count(0.58, 0.76)
+    half = count(0.45, 0.55)
+    quarters = count(0.2, 0.28) + count(0.76, 0.82)
+    if one_third > 0.4 * swung and one_third + swung > 3 * (half + quarters) and one_third + swung > 0.25 * len(f):
+        return Meter(beats_per_bar, True)
+    swing = swung > 1.5 * half and swung > 2 * one_third and swung >= 0.08 * len(f)
+    return Meter(beats_per_bar, False, bool(swing))
+
+
+def _unswing(fr: float) -> float:
+    """Map a swung off-beat (about 2/3 of the beat) back to the written half beat."""
+    return fr * 0.75 if fr <= 2 / 3 else 0.5 + (fr - 2 / 3) * 1.5
 
 
 def _beat_grids(x: np.ndarray, meter: Meter) -> dict[int, int]:
@@ -71,8 +95,10 @@ def _beat_grids(x: np.ndarray, meter: Meter) -> dict[int, int]:
     for b, fracs in grids.items():
         fr = np.array(fracs)
         cost = lambda g: np.abs(fr * g - np.round(fr * g)).sum() / g  # noqa: E731
-        if np.any(np.abs(fr - 1 / 3) < 0.08) or np.any(np.abs(fr - 2 / 3) < 0.08):
-            out[b] = 3 if cost(3) < 0.7 * cost(4) else 4
+        # In swing a late off-beat is normal; only an onset on the first third makes a triplet.
+        triplet_hint = np.any(np.abs(fr - 1 / 3) < 0.08) or (not meter.swing and np.any(np.abs(fr - 2 / 3) < 0.08))
+        if triplet_hint:
+            out[b] = 3 if cost(3) < 0.7 * cost(meter.subdivision) else meter.subdivision
     return out
 
 
@@ -83,13 +109,16 @@ def quantise(notes, beats: list[float], meter: Meter) -> list[tuple[Fraction, Fr
     arr = np.array(notes, dtype=float)
     on_x = seconds_to_beats(arr[:, 0], beats)
     off_x = seconds_to_beats(arr[:, 1], beats)
-    default = 6 if meter.compound else 4
+    default = 6 if meter.compound else meter.subdivision
     grids = _beat_grids(on_x, meter)
 
     def snap(v: float) -> Fraction:
         b = int(np.floor(v))
         g = grids.get(b, default)
-        return (b + Fraction(round((v - b) * g), g)) * meter.beat_ql
+        fr = v - b
+        if meter.swing and g in (2, 4):
+            fr = _unswing(fr)
+        return (b + Fraction(round(fr * g), g)) * meter.beat_ql
 
     out = []
     for a, b, p in zip(on_x, off_x, arr[:, 2]):
@@ -134,8 +163,13 @@ def split_hands(qnotes):
     return right, left
 
 
-def _staff_events(qnotes, bar_ql: Fraction):
-    """Collapse overlapping notes into one chord sequence a player can read."""
+def _staff_events(qnotes, bar_ql: Fraction, beat_ql: Fraction = Fraction(1)):
+    """Collapse overlapping notes into one chord sequence a player can read.
+
+    A gap shorter than a beat before the next chord is absorbed into the chord,
+    as a copyist would: detached playing is shown with fewer, longer notes rather
+    than a rest after every one.
+    """
     by_onset: dict[Fraction, list] = {}
     for on, off, pitch in qnotes:
         by_onset.setdefault(on, []).append((off - on, pitch))
@@ -145,7 +179,8 @@ def _staff_events(qnotes, bar_ql: Fraction):
         group = by_onset[on]
         longest = max(d for d, _ in group)
         gap = onsets[i + 1] - on if i + 1 < len(onsets) else longest
-        events.append((on, min(longest, gap, bar_ql), sorted({p for _, p in group})))
+        dur = gap if gap <= beat_ql else max(longest, min(gap, beat_ql))
+        events.append((on, min(dur, gap, bar_ql), sorted({p for _, p in group})))
     return events
 
 
@@ -241,20 +276,27 @@ def write_musicxml(notes, beats, meter: Meter, bpm, title, instrument, path: Pat
     if grand_staff:
         right, left = split_hands(q)
         upper, lower = stream.PartStaff(id="upper"), stream.PartStaff(id="lower")
-        _fill_part(upper, _staff_events(right, meter.bar_ql), end, meter, clef.TrebleClef(), flats)
-        _fill_part(lower, _staff_events(left, meter.bar_ql), end, meter, clef.BassClef(), flats)
+        _fill_part(upper, _staff_events(right, meter.bar_ql, meter.beat_ql), end, meter, clef.TrebleClef(), flats)
+        _fill_part(lower, _staff_events(left, meter.bar_ql, meter.beat_ql), end, meter, clef.BassClef(), flats)
         upper.insert(0, m21inst.Piano())
         parts = [upper, lower]
     else:
         part = stream.Part(id=instrument)
         median = np.median([n[2] for n in q]) if q else 60
-        _fill_part(part, _staff_events(q, meter.bar_ql), end, meter, clef.BassClef() if median < 55 else clef.TrebleClef(), flats)
+        # Bass clef for low parts; the octave-down treble clef (as for guitar or tenor
+        # voice) for the tenor register, so a tenor sax is not all ledger lines.
+        staff_clef = clef.BassClef() if median < 50 else clef.Treble8vbClef() if median < 62 else clef.TrebleClef()
+        _fill_part(part, _staff_events(q, meter.bar_ql, meter.beat_ql), end, meter, staff_clef, flats)
         part.partName = instrument
         parts = [part]
 
     from music21 import duration
 
     parts[0].insert(0, tempo.MetronomeMark(number=round(bpm), referent=duration.Duration(meter.beat_ql)))
+    if meter.swing:
+        from music21 import expressions
+
+        parts[0].insert(0, expressions.TextExpression("Swing"))
     for p in parts:
         p.insert(0, key.KeySignature(sharps))
 

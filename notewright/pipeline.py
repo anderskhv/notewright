@@ -12,22 +12,24 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-from . import audio, notation, transcribe
+from . import audio, instruments, notation, transcribe
 from .config import DATA_DIR, device
 
-# id, display name, transcriber, sampler voice in the browser
-TRACKS = [
-    ("piano", "Piano", "poly", "piano"),
-    ("vocals", "Vocals (melody)", "mono", "voice_oohs"),
-    ("guitar", "Guitar", "poly", "acoustic_guitar_steel"),
-    ("bass", "Bass", "mono", "electric_bass_finger"),
-    ("drums", "Drums", "drums", "drums"),
-    ("other", "Other (keys, strings, synths)", "poly", "string_ensemble_1"),
-]
-MONO_RANGE = {"bass": (30.0, 400.0), "vocals": (80.0, 1100.0)}
+# Per family: transcriber and sampler voice in the browser. Horns get one track per horn.
+FAMILY_TRACKS = {
+    "piano": ("poly", "piano"),
+    "horns": ("mono", None),
+    "guitar": ("poly", "acoustic_guitar_steel"),
+    "vocals": ("mono", "voice_oohs"),
+    "bass": ("mono", None),
+    "drums": ("drums", "drums"),
+    "other": ("poly", "string_ensemble_1"),
+}
+HORN_VOICES = {"trumpet": "trumpet", "trombone": "trombone", "clarinet": "clarinet", "flute": "flute"}
+# Bass stops at middle C: walking lines live below it, and a higher limit invites octave errors.
+MONO_RANGE = {"bass": (30.0, 262.0), "vocals": (80.0, 1100.0), "horns": (80.0, 1400.0)}
 # Default note sensitivity per polyphonic track (0.5 is the piano model's own default).
 SENSITIVITY = {"piano": 0.5, "guitar": 0.4, "other": 0.25}
-SILENT_STEM = 0.06  # stems quieter than this fraction of the mix (RMS) are skipped
 
 
 def jobs_dir() -> Path:
@@ -122,6 +124,8 @@ def worker() -> None:
             action = record.get("action") or {}
             if action.get("type") == "retune":
                 retune(job, action["track"], action["sensitivity"])
+            elif action.get("type") == "lineup":
+                relineup(job, action["lineup"])
             else:
                 run(job)
             job.save(status="done", stage="Done", progress=1.0, action=None)
@@ -178,11 +182,6 @@ def start_worker() -> None:
     threading.Thread(target=worker, daemon=True, name="notewright-worker").start()
 
 
-def _rms(path: Path) -> float:
-    y, _ = sf.read(str(path), dtype="float32", always_2d=True)
-    return float(np.sqrt(np.mean(y**2))) if y.size else 0.0
-
-
 def run(job: Job) -> None:
     d, rec, dev = job.dir, job.record, device()
     band = rec["mode"] == "band"
@@ -203,36 +202,122 @@ def run(job: Job) -> None:
     bpm, beats, per_bar, compound = transcribe.beat_grid(wav, duration, dev)
     (d / "grid.json").write_text(json.dumps({"bpm": bpm, "beats": beats, "perBar": per_bar, "compound": compound}))
 
-    tracks = []
+    extra = {}
     if band:
         from .separate import separate
 
-        stems = separate(wav, d / "stems", dev, job.stage("Separating instruments", 0.08, 0.45))
-        mix_rms = _rms(wav) or 1.0
-        audio_stems = {}
+        stems = separate(wav, d / "stems", dev, job.stage("Separating instruments", 0.08, 0.4))
+        # Keep Demucs' own stems, so the line-up can be changed later without separating again.
+        raw = d / "stems" / "raw"
+        raw.mkdir(exist_ok=True)
         for name, path in stems.items():
-            audio.to_browser(path, d / "stems" / f"{name}{audio.BROWSER_EXT}")
-            audio_stems[name] = f"stems/{name}{audio.BROWSER_EXT}"
-        active = [t for t in TRACKS if _rms(stems[t[0]]) / mix_rms >= SILENT_STEM]
-        span = 0.5 / max(1, len(active))
-        for i, (tid, name, kind, voice) in enumerate(active):
-            report = job.stage(f"Transcribing {name.split(' ')[0].lower()}", 0.45 + i * span, 0.45 + (i + 1) * span)
-            tracks.append(_transcribe(d, tid, name, kind, voice, stems[tid], dev, report))
-        for tid, name, _, voice in TRACKS:
-            if tid not in {t["id"] for t in tracks}:
-                tracks.append({"id": tid, "name": name, "voice": voice, "notes": [], "silent": True})
-        for t in tracks:
-            t["stem"] = audio_stems.get(t["id"])
+            audio.to_browser(path, raw / f"{name}{audio.BROWSER_EXT}")
+        job.stage("Recognising instruments", 0.4, 0.45)
+        lineup = instruments.normalise_lineup(instruments.detect(wav, stems, dev))
+        lineup["detected"] = True
+        tracks = _band(job, {n: _read(p) for n, p in stems.items()}, lineup, 0.45)
+        extra["lineup"] = lineup
     else:
         report = job.stage("Transcribing piano", 0.08, 0.95)
-        tracks.append(_transcribe(d, "piano", "Piano", "poly", "piano", wav, dev, report))
+        tracks = [_transcribe(d, "piano", "Piano", "poly", "piano", wav, dev, report)]
 
     job.stage("Writing sheet music", 0.95, 1.0)
-    _write_result(job, tracks, duration)
+    _write_result(job, tracks, duration, **extra)
     # The wav copies are only needed for analysis.
     wav.unlink(missing_ok=True)
     for f in list(d.glob("source.*")) + list(d.glob("upload.*")) + list((d / "stems").glob("*.wav")):
         f.unlink(missing_ok=True)
+
+
+def envelope(d: Path) -> Path:
+    """Cache and return envelope.json for a finished job (see server.envelope)."""
+    path = d / "envelope.json"
+    result = json.loads((d / "result.json").read_text())
+    if path.exists() and json.loads(path.read_text()).get("version") == result.get("version"):
+        return path
+    wav = d / "envelope.wav"
+    audio.ffmpeg("-i", str(d / result["audio"]), "-ac", "1", "-ar", "16000", str(wav))
+    y, sr = sf.read(str(wav), dtype="float32")
+    wav.unlink()
+    hop = sr // 100
+    frames = len(y) // hop
+    energy = (y[: frames * hop].reshape(frames, hop) ** 2).mean(axis=1)
+    log = np.log10(energy + 1e-10)
+    path.write_text(json.dumps({"version": result.get("version"), "fps": 100, "log": [round(float(v), 2) for v in log]}))
+    return path
+
+
+def _read(path: Path) -> tuple[np.ndarray, int]:
+    y, sr = sf.read(str(path), dtype="float32", always_2d=True)
+    return y.T, sr
+
+
+def _band(job: Job, stems: dict[str, tuple[np.ndarray, int]], lineup: dict, start: float) -> list[dict]:
+    """Regroup the stems into the line-up, write one browser stem per family, transcribe."""
+    d, dev = job.dir, device()
+    sr = next(iter(stems.values()))[1]
+    job.stage("Regrouping instruments", start, start + 0.05)
+    parts = instruments.arrange({n: y for n, (y, _) in stems.items()}, sr, lineup)
+    for old in (d / "stems").glob(f"*{audio.BROWSER_EXT}"):
+        old.unlink()
+    for f in list(d.glob("model-*.npz")):
+        f.unlink()  # parts changed, so saved model output no longer matches
+    paths = {}
+    for family, y in parts.items():
+        wav = d / "stems" / f"{family}.wav"
+        sf.write(str(wav), y.T, sr)
+        audio.to_browser(wav, d / "stems" / f"{family}{audio.BROWSER_EXT}")
+        paths[family] = wav
+
+    tracks = []
+    families = lineup["families"]
+    span = (0.95 - start - 0.05) / max(1, len(families))
+    for i, family in enumerate(families):
+        kind, voice = FAMILY_TRACKS[family]
+        lo = start + 0.05 + i * span
+        report = job.stage(f"Transcribing {instruments.NAMES.get(family, family).split(' ')[0].lower()}", lo, lo + span)
+        stem = {"stem": f"stems/{family}{audio.BROWSER_EXT}", "stemId": family}
+        if family == "horns":
+            # Gate: in another instrument's solo the horn part holds only leakage.
+            line = transcribe.monophonic(paths[family], *MONO_RANGE["horns"], report, gate=0.2)
+            split = instruments.split_horns(line, lineup["horns"])
+            for horn in lineup["horns"]:
+                notes = split.get(horn, [])
+                median = float(np.median([n[2] for n in notes])) if notes else 60
+                hv = HORN_VOICES.get(horn) or ("alto_sax" if median >= 68 else "tenor_sax")
+                tracks.append({"id": horn, "name": instruments.NAMES[horn], "voice": hv, "notes": notes,
+                               "pedals": [], "group": "Horns", **stem})
+            continue
+        if family == "bass":
+            voice = "acoustic_bass" if lineup.get("bassKind") == "double" else "electric_bass_finger"
+        name = instruments.NAMES[family]
+        if family == "bass" and lineup.get("bassKind") == "double":
+            name = "Double bass"
+        track = _transcribe(d, family, name, kind, voice, paths[family], dev, report)
+        tracks.append({**track, **stem})
+    for wav in paths.values():
+        wav.unlink(missing_ok=True)
+    return tracks
+
+
+def relineup(job: Job, lineup: dict) -> None:
+    """Rebuild the parts for a corrected line-up from the kept Demucs stems."""
+    d = job.dir
+    result = json.loads((d / "result.json").read_text())
+    raw = d / "stems" / "raw"
+    if not raw.exists():
+        raise RuntimeError("This song was separated by an older version. Press Separate instruments again.")
+    job.stage("Reading the separated parts", 0.0, 0.05)
+    stems = {}
+    for f in raw.glob(f"*{audio.BROWSER_EXT}"):
+        wav = f.with_suffix(".wav")
+        audio.ffmpeg("-i", str(f), "-ac", "2", "-ar", "44100", str(wav))
+        stems[f.stem] = _read(wav)
+        wav.unlink()
+    lineup = instruments.normalise_lineup(lineup)
+    tracks = _band(job, stems, lineup, 0.05)
+    job.stage("Writing sheet music", 0.95, 1.0)
+    _write_result(job, tracks, result["duration"], lineup=lineup)
 
 
 def retune(job: Job, track_id: str, sensitivity: float) -> None:
@@ -254,10 +339,10 @@ def retune(job: Job, track_id: str, sensitivity: float) -> None:
     track["notes"], track["pedals"] = transcribe.notes_from_output(transcribe.load_output(raw), sensitivity)
     track["sensitivity"] = sensitivity
     job.stage("Writing sheet music", 0.95, 1.0)
-    _write_result(job, result["tracks"], result["duration"])
+    _write_result(job, result["tracks"], result["duration"], lineup=result.get("lineup"))
 
 
-def _write_result(job: Job, tracks: list[dict], duration: float) -> None:
+def _write_result(job: Job, tracks: list[dict], duration: float, lineup: dict | None = None) -> None:
     d, rec = job.dir, job.record
     grid_path = d / "grid.json"
     if grid_path.exists():
@@ -268,7 +353,7 @@ def _write_result(job: Job, tracks: list[dict], duration: float) -> None:
     bpm, beats = grid["bpm"], grid["beats"]
 
     pitched = [n for t in tracks if t["id"] != "drums" for n in t["notes"]]
-    meter = notation.detect_meter(pitched, beats, grid["perBar"], grid["compound"])
+    meter = notation.detect_meter(pitched, beats, grid["perBar"], grid["compound"], bpm)
     if pitched:
         # Start the score at the bar where the music starts, not with empty bars.
         first = notation.seconds_to_beats([min(n[0] for n in pitched)], beats)[0]
@@ -292,12 +377,14 @@ def _write_result(job: Job, tracks: list[dict], duration: float) -> None:
         "bpm": bpm,
         "beats": beats,
         "timeSignature": meter.signature,
+        "swing": meter.swing,
         "beatsPerBar": meter.beats_per_bar,
         # Quarter notes per beat: the player maps score positions to beats with it.
         "beatQuarters": float(meter.beat_ql),
         "audio": f"audio{audio.BROWSER_EXT}",
         "midi": "transcription.mid",
         "tracks": tracks,
+        "lineup": lineup,
         "version": int(time.time()),
     }
     tmp = d / "result.json.tmp"

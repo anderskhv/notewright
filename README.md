@@ -7,10 +7,10 @@ Everything runs on your own computer. Notewright uses no accounts, no cloud serv
 ## What it does
 
 - **Piano mode** transcribes a piano recording: every note, how hard it was played, and the sustain pedal.
-- **Full band mode** first splits the song into six parts (piano, vocals, guitar, bass, drums and everything else) and transcribes each part.
-- **Sheet music** in the right time signature (2/4, 3/4, 4/4, 6/8, 9/8, 12/8), with bar lines on the real downbeats, triplets where the music has them, a key signature, and the piano split across two staves by hand.
+- **Full band mode** separates the instruments, recognises which ones actually play, and transcribes each one. You see your real line-up (for example piano, saxophone, trumpet, double bass and drums), not a fixed list. If the line-up is wrong, tick the right instruments and the parts are rebuilt.
+- **Sheet music** in the right time signature (2/4, 3/4, 4/4, 6/8, 9/8, 12/8), with bar lines on the real downbeats, a key signature, and the piano split across two staves by hand. Swing is written in plain eighth notes marked "Swing", the way jazz charts are, and real triplets stay triplets.
 - **Piano roll**, Synthesia style, with each instrument in its own colour.
-- **Playback** of the original, the separated parts and the transcription (played on sampled instruments), all in sync. Each one has its own volume.
+- **Playback** of the original, the separated parts and the transcription (played on sampled instruments), each with its own volume. The player measures the delay between the recording and the notes in your browser and corrects for it, so they stay together.
 - **Speed** from 25% to 150% without changing pitch, plus A–B looping for practice.
 - **Play along**: mute your instrument and keep either the real band (the separated recording) or the transcribed band. A song transcribed in piano mode can be separated later with one click, without downloading it again.
 - **More or fewer notes**: if quiet notes are missing, such as comping chords under a solo, move the slider above the sheet music. Notewright then reads that part again from the saved model output, which takes seconds.
@@ -45,7 +45,7 @@ source .venv/bin/activate
 python -m notewright
 ```
 
-This opens http://127.0.0.1:8765 in your browser. The first transcription downloads the models once into `~/.cache`: about 165 MB for the piano model, 80 MB for the beat tracker and 80 MB for the separator. After that, transcription works offline. Instrument sounds for playback load from the web the first time they are used.
+This opens http://127.0.0.1:8765 in your browser. The first transcription downloads the models once into `~/.cache`: about 165 MB for the piano model, 80 MB for the beat tracker, 80 MB for the separator and 330 MB for the instrument recogniser. After that, transcription works offline. Instrument sounds for playback load from the web the first time they are used.
 
 If YouTube answers "Sign in to confirm you're not a bot", let yt-dlp use your browser's YouTube sign-in. Name your browser (`chrome`, `safari`, `firefox`, `edge` or `brave`):
 
@@ -65,6 +65,8 @@ On a recent laptop CPU, piano mode takes about as long as the song itself, and f
 | --- | --- |
 | Download | [yt-dlp](https://github.com/yt-dlp/yt-dlp) |
 | Separate instruments | [Demucs](https://github.com/facebookresearch/demucs) `htdemucs_6s` (MIT) |
+| Recognise instruments, regroup parts | [PANNs](https://github.com/qiuqiangkong/panns_inference) sound-event model, Kong et al. 2020 (MIT), plus note-content matching between parts |
+| Horns (sax, trumpet, trombone) | One melodic line from the horn part, divided between the horns by register and phrase |
 | Piano, guitar, other | [High-resolution piano transcription](https://github.com/qiuqiangkong/piano_transcription_inference), Kong et al. 2021 (MIT) |
 | Bass, vocal melody | Probabilistic YIN pitch tracking ([librosa](https://librosa.org)) plus onset detection |
 | Drums | Onset detection plus a three-band energy split into kick, snare and hi-hat |
@@ -81,6 +83,8 @@ The sheet music is written on the beat grid detected in the recording, so tempo 
 ## Limits
 
 - **Piano** is the strongest part: the model was trained on concert piano recordings.
+- **Horns** share one separated recording part: no open-source separator splits a sax from a trumpet. Their note tracks are separate, divided by register (trumpet sits above tenor sax) and smoothed over whole solos. In unison passages the line goes to one of them.
+- **Instrument recognition** is a suggestion. Old or dull recordings can hide an instrument, so check the line-up and correct it.
 - **Guitar and "other"** reuse the piano model. That works reasonably for plucked and struck instruments and less well for distorted guitar or pads.
 - **Bass and vocals** are tracked as single melodic lines. Chords sung by a choir become one line.
 - **Drums** come out as kick, snare and hi-hat only.

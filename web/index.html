@@ -117,6 +117,32 @@
             <button id="separate" hidden title="Splits the recording into piano, vocals, guitar, bass, drums and other, so you can mute your part. Takes a few minutes.">Separate instruments to play along</button>
             <span id="sound-status" class="hint"></span>
           </div>
+          <div id="lineup" class="lineup" hidden>
+            <span class="label">Line-up</span> <span id="lineup-text"></span>
+            <button id="lineup-edit" class="link-button">Edit</button>
+            <form id="lineup-form" class="lineup-form" hidden>
+              <span class="hint">Tick what really plays. The parts are rebuilt from the separation already done, which takes a few minutes.</span>
+              <div class="choices">
+                <label><input type="checkbox" value="piano"> Piano</label>
+                <label><input type="checkbox" value="saxophone"> Saxophone</label>
+                <label><input type="checkbox" value="trumpet"> Trumpet</label>
+                <label><input type="checkbox" value="trombone"> Trombone</label>
+                <label><input type="checkbox" value="clarinet"> Clarinet</label>
+                <label><input type="checkbox" value="flute"> Flute</label>
+                <label><input type="checkbox" value="guitar"> Guitar</label>
+                <label><input type="checkbox" value="vocals"> Vocals</label>
+                <label><input type="checkbox" value="bass"> Bass</label>
+                <select id="bass-kind" aria-label="Kind of bass">
+                  <option value="double">double bass</option>
+                  <option value="electric">electric bass</option>
+                </select>
+                <label><input type="checkbox" value="drums"> Drums</label>
+                <label><input type="checkbox" value="other"> Other (strings, keys, synths)</label>
+              </div>
+              <button type="submit" class="primary">Rebuild parts</button>
+              <button type="button" id="lineup-cancel">Cancel</button>
+            </form>
+          </div>
           <table>
             <thead><tr><th>Part</th><th>Recording</th><th>Transcription</th><th>Show</th></tr></thead>
             <tbody id="mix-rows"></tbody>

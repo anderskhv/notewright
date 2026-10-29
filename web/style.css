@@ -172,3 +172,12 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
   .transport { flex-wrap: wrap; }
   .speed input { width: 80px; }
 }
+
+.lineup { margin: 4px 0 10px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.lineup .label { color: var(--muted); }
+.link-button { border: none; background: none; color: var(--accent); padding: 0; }
+.lineup-form { flex-basis: 100%; display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; }
+.lineup-form .choices { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; }
+.lineup-form select { border: 1px solid var(--line); border-radius: 6px; background: var(--bg); padding: 2px 4px; }
+.lineup-form button { align-self: flex-start; }
+.lineup-form > button + button { margin-top: -4px; }

@@ -1,9 +1,10 @@
 # Python 3.11 to 3.13. ffmpeg must be on PATH.
-torch>=2.5
-torchaudio>=2.5
+torch>=2.6
+torchaudio>=2.6
 demucs>=4.0.1
 piano_transcription_inference>=0.0.6
 beat_this>=1.1.0
+panns_inference>=0.1.1
 librosa>=0.10
 audioread>=3.0
 soundfile>=0.12

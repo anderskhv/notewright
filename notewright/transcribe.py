@@ -41,15 +41,8 @@ def _load_piano_model(device: str):
         import torch
         from piano_transcription_inference import PianoTranscription
 
-        checkpoint = _piano_checkpoint()
-        # The 2020 checkpoint holds plain tensors plus bookkeeping ints; it predates
-        # torch's weights_only default, so load it the way it was saved.
-        original_load = torch.load
-        torch.load = lambda *a, **k: original_load(*a, **{**k, "weights_only": False})
-        try:
-            _piano_model = PianoTranscription(device=torch.device(device), checkpoint_path=str(checkpoint))
-        finally:
-            torch.load = original_load
+        # The checkpoint is plain tensors, so torch's default weights-only loading reads it.
+        _piano_model = PianoTranscription(device=torch.device(device), checkpoint_path=str(_piano_checkpoint()))
     return _piano_model
 
 
@@ -120,8 +113,12 @@ def notes_from_output(output: dict[str, np.ndarray], sensitivity: float) -> tupl
     return sorted(notes), pedals
 
 
-def monophonic(path: Path, fmin: float, fmax: float, progress: Progress) -> Notes:
-    """Pitch-track a single melodic line and cut it into notes."""
+def monophonic(path: Path, fmin: float, fmax: float, progress: Progress, gate: float = 0.0) -> Notes:
+    """Pitch-track a single melodic line and cut it into notes.
+
+    gate: ignore frames quieter than this fraction of the line's loud passages (its
+    90th-percentile level), for parts that are mostly leakage while others solo.
+    """
     sr, hop = 16000, 256
     y, _ = librosa.load(str(path), sr=sr, mono=True)
     progress(0.1)
@@ -130,6 +127,10 @@ def monophonic(path: Path, fmin: float, fmax: float, progress: Progress) -> Note
     rms = librosa.feature.rms(y=y, frame_length=2048, hop_length=hop)[0]
     rms = np.pad(rms, (0, max(0, len(f0) - len(rms))))[: len(f0)]
     loud = rms > max(1e-4, np.percentile(rms[rms > 0], 20) if np.any(rms > 0) else 0)
+    if gate and np.any(rms > 0):
+        # Judge loudness over half a second, so the gaps inside a phrase do not count.
+        level = np.convolve(rms, np.ones(31) / 31, mode="same")
+        loud &= level > gate * np.percentile(rms, 90)
     onset_frames = librosa.onset.onset_detect(y=y, sr=sr, hop_length=hop)
     onsets = set(onset_frames.tolist())
     near_onset = np.zeros(len(f0) + 1, dtype=bool)
@@ -220,14 +221,21 @@ _beat_model = None
 
 
 def _fill_gaps(beats: np.ndarray) -> np.ndarray:
-    """Put back beats the tracker skipped (an interval of about two or more beats)."""
+    """Put back beats the tracker skipped (an interval of about two or more local beats).
+
+    "Local" matters: a ballad that slows down has long beats late on, and comparing them
+    with the song's overall median would invent beats that are not there.
+    """
     if len(beats) < 3:
         return beats
-    spb = float(np.median(np.diff(beats)))
+    iv = np.diff(beats)
     out = [beats[0]]
-    for b in beats[1:]:
-        missing = int(round((b - out[-1]) / spb)) - 1
-        if missing >= 1 and (b - out[-1]) > 1.6 * spb:
+    for i, b in enumerate(beats[1:]):
+        lo, hi = max(0, i - 8), min(len(iv), i + 9)
+        neighbours = np.delete(iv[lo:hi], i - lo)  # the interval itself does not vote
+        local = float(np.median(neighbours)) if len(neighbours) else float(iv[i])
+        missing = int(round((b - out[-1]) / local)) - 1
+        if missing >= 1 and (b - out[-1]) > 1.6 * local:
             out += list(np.linspace(out[-1], b, missing + 2)[1:-1])
         out.append(b)
     return np.array(out)
@@ -266,11 +274,14 @@ def beat_grid(path: Path, duration: float, device: str) -> tuple[float, list[flo
         per_bar //= 3
 
     spb = float(np.median(np.diff(beats)))
+    # Extrapolate at the tempo the music has at each end, not the song's average.
+    head = float(np.median(np.diff(beats[:9]))) if len(beats) > 2 else spb
+    tail = float(np.median(np.diff(beats[-9:]))) if len(beats) > 2 else spb
     grid = list(beats)
     # Extend backwards until the grid starts on a downbeat at or before time zero.
     while grid[0] > 0.02 or first_down % per_bar:
-        grid.insert(0, grid[0] - spb)
+        grid.insert(0, grid[0] - head)
         first_down += 1
-    while grid[-1] < duration + spb:
-        grid.append(grid[-1] + spb)
+    while grid[-1] < duration + tail:
+        grid.append(grid[-1] + tail)
     return round(60.0 / spb, 1), [round(float(b), 4) for b in grid], per_bar, compound

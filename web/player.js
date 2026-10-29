@@ -2,14 +2,41 @@
 // playing the transcription, all locked to one clock and one playback speed.
 import { DrumMachine, Soundfont, SplendidGrandPiano } from "./vendor/smplr.mjs";
 
-// Sync model: the full recording is the master clock, because it is what you hear.
-// The AudioContext clock interpolates between its position reports and is slewed
-// toward it; stems are pulled onto it by nudging their speed; sampled notes are
-// scheduled on the AudioContext clock. All media plays through the AudioContext,
-// so everything shares one output latency (which matters with Bluetooth headphones).
+// Sync model.
+// - The full recording is the master: the clock follows the element's reported
+//   position (only fresh reports count, since some browsers update it coarsely).
+// - That report is not what reaches the speakers: the media pipeline adds its own
+//   delay, which differs per browser. So the player measures it. A tap behind the
+//   recording records its loudness every 10 ms; every couple of seconds that is
+//   cross-correlated with the same loudness curve computed on the server from the
+//   audio the notes were transcribed from. The lag found is the pipeline delay, and
+//   the clock is corrected by it. Sampled notes, cursor and piano roll run on that clock.
+// - Stems follow the recording by nudging their speed (pitch is preserved).
+// - All media plays through the AudioContext, so it shares one output latency.
 const LOOKAHEAD = 0.25; // seconds of song time scheduled ahead
-const SLEW = 0.08; // fraction of the clock error corrected per tick
+const SLEW = 0.1; // fraction of the clock error corrected per fresh position report
 const HARD = 0.25; // past this, jump instead of slewing
+const FPS = 100; // loudness frames per second, as on the server
+const MAX_LAG = 40; // frames searched either way (±0.4 s)
+
+const TAP_SOURCE = `
+class Tap extends AudioWorkletProcessor {
+  constructor() { super(); this.sum = 0; this.n = 0; this.t = null; }
+  process(inputs) {
+    const ch = inputs[0] && inputs[0][0];
+    if (ch) {
+      if (this.t === null) this.t = currentTime;
+      for (let i = 0; i < ch.length; i++) this.sum += ch[i] * ch[i];
+      this.n += ch.length;
+      if (this.n >= sampleRate / 100) {
+        this.port.postMessage([this.t, this.sum / this.n]);
+        this.sum = 0; this.n = 0; this.t = null;
+      }
+    }
+    return true;
+  }
+}
+registerProcessor("notewright-tap", Tap);`;
 
 function lowerBound(notes, t) {
   let lo = 0, hi = notes.length;
@@ -47,6 +74,13 @@ function drumName(groups, gm) {
   return groups[0];
 }
 
+// Rise in loudness per frame: onsets, which line up sharply.
+function onsets(log) {
+  const out = new Float32Array(log.length);
+  for (let i = 1; i < log.length; i++) out[i] = Math.max(0, log[i] - log[i - 1]);
+  return out;
+}
+
 export class Player {
   constructor() {
     this.ctx = new AudioContext({ latencyHint: "interactive" });
@@ -54,12 +88,23 @@ export class Player {
     this.playing = false;
     this.position = 0;
     this.duration = 0;
-    this.media = new Map(); // id -> HTMLAudioElement
-    this.synths = new Map(); // id -> { notes, instrument, volume, pointer, ready }
+    this.media = new Map(); // stem id -> { el, gain, node }
+    this.synths = new Map(); // track id -> { notes, instrument, volume, pointer, ready }
     this.loop = { a: null, b: null, on: false };
+    // Measured media pipeline delay, seconds of real time. It belongs to this browser
+    // and computer, so the last measurement is where the next song starts.
+    this.delay = 0;
+    try { this.delay = Number(localStorage.getItem("notewright.delay")) || 0; } catch {}
+    this.sync = { measured: false, confidence: 0 };
     this.onEnd = () => {};
     this.onLoading = () => {};
+    this.onSync = () => {};
     this._timer = null;
+    this._capture = [];
+    this._history = [];
+    this._tapReady = this.ctx.audioWorklet
+      .addModule(URL.createObjectURL(new Blob([TAP_SOURCE], { type: "application/javascript" })))
+      .catch((err) => console.warn("Sync measurement unavailable:", err));
   }
 
   get time() {
@@ -74,7 +119,11 @@ export class Player {
     return Math.max(0, this.time - latency * this.rate);
   }
 
-  load(result, base) {
+  _songAt(ctxTime) {
+    return this.anchorSong + (ctxTime - this.anchorCtx) * this.rate;
+  }
+
+  load(result, base, envelopeUrl) {
     this.pause();
     this.position = 0;
     for (const m of this.media.values()) { m.el.pause(); m.el.removeAttribute("src"); m.el.load(); m.node.disconnect(); }
@@ -83,11 +132,23 @@ export class Player {
     this.synths.clear();
     this.duration = result.duration;
     this.loop = { a: null, b: null, on: false };
+    this.reference = null;
+    this._history = [];
+    this.sync = { measured: false, confidence: 0 };
+    if (envelopeUrl) {
+      fetch(envelopeUrl).then((r) => r.json()).then((env) => {
+        this.reference = onsets(Float32Array.from(env.log));
+      }).catch((err) => console.warn("No loudness reference:", err));
+    }
 
     this._addMedia("original", base + result.audio, 1);
+    this._attachTap();
+    const stems = new Map();
+    for (const t of result.tracks) if (t.stem) stems.set(t.stemId || t.id, t.stem);
+    for (const [id, src] of stems) this._addMedia(id, base + src, 0);
+
     let pending = 0;
     for (const track of result.tracks) {
-      if (track.stem) this._addMedia(track.id, base + track.stem, 0);
       if (!track.notes.length) continue;
       const notes = track.notes.map(([start, end, pitch, vel]) => ({ start, end, pitch, vel }));
       const sound = track.id === "piano" ? withPedal(notes, track.pedals || []) : notes.map((n) => n.end);
@@ -104,6 +165,22 @@ export class Player {
       });
     }
     this.onLoading(pending);
+  }
+
+  async _attachTap() {
+    await this._tapReady;
+    const master = this.media.get("original");
+    if (!master || !this.ctx.audioWorklet) return;
+    try {
+      const tap = new AudioWorkletNode(this.ctx, "notewright-tap");
+      const sink = this.ctx.createGain();
+      sink.gain.value = 0;
+      master.node.connect(tap).connect(sink).connect(this.ctx.destination);
+      tap.port.onmessage = (e) => this._onTap(e.data);
+      master.tap = tap;
+    } catch (err) {
+      console.warn("Sync measurement unavailable:", err);
+    }
   }
 
   async _makeInstrument(synth) {
@@ -163,8 +240,10 @@ export class Player {
     if (this._starting !== token) return; // paused or seeked meanwhile
     this._starting = null;
     const master = this.media.get("original").el;
-    this.anchorSong = master.currentTime;
+    this.anchorSong = master.currentTime - this.delay * this.rate;
     this.anchorCtx = this.ctx.currentTime;
+    this._lastReport = master.currentTime;
+    this._capture = [];
     for (const s of this.synths.values()) s.pointer = lowerBound(s.notes, this.anchorSong);
     this.playing = true;
     this._timer = setInterval(() => this._tick(), 25);
@@ -178,7 +257,7 @@ export class Player {
       return;
     }
     if (!this.playing) return;
-    this.position = Math.min(this.time, this.duration);
+    this.position = Math.max(0, Math.min(this.time, this.duration));
     this.playing = false;
     clearInterval(this._timer);
     for (const m of this.media.values()) m.el.pause();
@@ -218,8 +297,8 @@ export class Player {
       this.onEnd();
       return;
     }
-    this._sync();
-    const horizon = t + LOOKAHEAD * this.rate;
+    this._follow();
+    const horizon = this.time + LOOKAHEAD * this.rate;
     const now = this.ctx.currentTime;
     for (const s of this.synths.values()) {
       const { notes } = s;
@@ -238,20 +317,17 @@ export class Player {
     }
   }
 
-  _sync() {
+  // Keep the clock on the recording, and the stems on the recording.
+  _follow() {
     const master = this.media.get("original").el;
     if (master.paused || master.seeking) return;
     const m = master.currentTime;
-    const err = m - this.time;
-    if (Math.abs(err) > HARD) {
-      this.anchorSong = m;
-      this.anchorCtx = this.ctx.currentTime;
-      for (const s of this.synths.values()) {
-        s.instrument?.stop();
-        s.pointer = lowerBound(s.notes, m);
-      }
-    } else if (Math.abs(err) > 0.005) {
-      this.anchorSong += err * SLEW;
+    if (m !== this._lastReport) {
+      // A fresh report: the recording is at m now, minus what its pipeline holds back.
+      this._lastReport = m;
+      const err = m - this.delay * this.rate - this.time;
+      if (Math.abs(err) > HARD) this._jump(err);
+      else this.anchorSong += err * SLEW;
     }
     for (const [id, { el }] of this.media) {
       if (id === "original" || el.paused || el.seeking) continue;
@@ -265,5 +341,80 @@ export class Player {
         el.playbackRate = this.rate * (1 + nudge);
       }
     }
+  }
+
+  _jump(err) {
+    this.anchorSong += err;
+    for (const s of this.synths.values()) {
+      s.instrument?.stop();
+      s.pointer = lowerBound(s.notes, this.time);
+    }
+  }
+
+  // ---------- Measuring the real delay ----------
+
+  _onTap([ctxTime, power]) {
+    if (!this.playing) return;
+    this._capture.push([this._songAt(ctxTime), Math.log10(power + 1e-10)]);
+    const first = this._capture[0][0];
+    const last = this._capture[this._capture.length - 1][0];
+    if (last - first > 8 * this.rate) this._capture.shift();
+    if (last - first >= 4 * this.rate && (!this._lastMeasure || ctxTime - this._lastMeasure > 2)) {
+      this._lastMeasure = ctxTime;
+      this._measure();
+    }
+  }
+
+  _measure() {
+    const ref = this.reference;
+    const cap = this._capture;
+    if (!ref || cap.length < 100) return;
+    // Resample the capture onto the song's 10 ms grid.
+    const start = Math.ceil(cap[0][0] * FPS) + MAX_LAG + 1;
+    const end = Math.floor(cap[cap.length - 1][0] * FPS) - 1;
+    if (end - start < 200 || end + MAX_LAG >= ref.length) return;
+    const log = new Float32Array(end - start + 2);
+    let j = 0;
+    for (let f = start - 1; f <= end; f++) {
+      const t = f / FPS;
+      while (j < cap.length - 2 && cap[j + 1][0] < t) j++;
+      const [t0, v0] = cap[j], [t1, v1] = cap[j + 1];
+      log[f - start + 1] = v0 + (v1 - v0) * Math.min(1, Math.max(0, (t - t0) / (t1 - t0 || 1)));
+    }
+    const got = onsets(log).subarray(1);
+    // Captured frame f holds reference frame f - lag, if the audio runs lag frames behind.
+    const scores = [];
+    for (let lag = -MAX_LAG; lag <= MAX_LAG; lag++) {
+      let dot = 0, a2 = 0, b2 = 0;
+      for (let i = 0; i < got.length; i++) {
+        const r = ref[start + i - lag] || 0;
+        dot += got[i] * r; a2 += got[i] * got[i]; b2 += r * r;
+      }
+      scores.push(dot / (Math.sqrt(a2 * b2) || 1));
+    }
+    let best = 0;
+    for (let i = 1; i < scores.length; i++) if (scores[i] > scores[best]) best = i;
+    let runnerUp = 0;
+    for (let i = 0; i < scores.length; i++) if (Math.abs(i - best) > 3) runnerUp = Math.max(runnerUp, scores[i]);
+    const confidence = scores[best];
+    // Accept only a clear, distinct peak (quiet or repetitive passages are skipped).
+    if (confidence < 0.35 || confidence - runnerUp < 0.08) return;
+    const lagSeconds = (best - MAX_LAG) / FPS / this.rate;
+    this._history.push(lagSeconds);
+    if (this._history.length > 3) this._history.shift();
+    const sorted = [...this._history].sort((a, b) => a - b);
+    const median = sorted[sorted.length >> 1];
+    if (this._history.length >= 2 && Math.abs(median) > 0.004) {
+      const step = median * 0.8;
+      this.delay += step;
+      this._history = this._history.map((v) => v - step);
+      // Small corrections shift the clock quietly; big ones restart the sampled notes.
+      if (Math.abs(step) > 0.03) this._jump(-step * this.rate);
+      else this.anchorSong -= step * this.rate;
+      this._capture = [];
+    }
+    try { localStorage.setItem("notewright.delay", String(this.delay)); } catch {}
+    this.sync = { measured: true, confidence, delay: this.delay };
+    this.onSync(this.sync);
   }
 }

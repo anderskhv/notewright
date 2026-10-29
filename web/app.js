@@ -2,7 +2,10 @@ import { Player } from "./player.js";
 import { PianoRoll } from "./roll.js";
 import { SheetView } from "./sheet.js";
 
-const COLORS = { piano: "#4f7cff", vocals: "#e4572e", guitar: "#f2a541", bass: "#3bb273", drums: "#9a9ba3", other: "#a463f2" };
+const COLORS = {
+  piano: "#4f7cff", vocals: "#ec4899", guitar: "#f2a541", bass: "#3bb273", drums: "#9a9ba3", other: "#a463f2",
+  horns: "#e3b505", saxophone: "#e3b505", trumpet: "#e5484d", trombone: "#b5651d", clarinet: "#8fbf3a", flute: "#3ab0bf",
+};
 const $ = (id) => document.getElementById(id);
 
 const player = new Player();
@@ -143,12 +146,12 @@ function openSong(result, base) {
   $("song").hidden = false;
   $("song-title").textContent = result.title;
   const parts = result.tracks.filter((t) => t.notes.length).length;
-  $("song-meta").textContent = `${result.timeSignature} · ${Math.round(result.bpm)} bpm · ${fmt(result.duration)}`
+  $("song-meta").textContent = `${result.timeSignature}${result.swing ? " swing" : ""} · ${Math.round(result.bpm)} bpm · ${fmt(result.duration)}`
     + (result.tracks.length > 1 ? ` · ${parts} parts transcribed` : "");
   $("duration").textContent = fmt(result.duration);
   $("dl-midi").href = base + result.midi;
 
-  player.load(result, base);
+  player.load(result, base, `/api/jobs/${result.id}/envelope`);
   player.setRate($("speed").value / 100);
 
   const tracks = result.tracks.map((t) => ({
@@ -175,6 +178,7 @@ function openSong(result, base) {
   setView(localStorage.getItem("notewright.view") || "both");
   updateLoopButtons();
   $("separate").hidden = (result.mode || current.job.mode) === "band";
+  showLineup(result);
   $("song-error").hidden = !current.job.error;
   $("song-error").textContent = current.job.error ? `The last change didn't work: ${current.job.error}` : "";
 
@@ -182,6 +186,49 @@ function openSong(result, base) {
   const saved = Number(sessionStorage.getItem(`notewright.pos.${result.id}`));
   if (saved) player.seek(saved);
 }
+
+const HORN_KINDS = ["saxophone", "trumpet", "trombone", "clarinet", "flute"];
+const LINEUP_NAMES = {
+  piano: "Piano", guitar: "Guitar", vocals: "Vocals", drums: "Drums", other: "Other",
+  saxophone: "Saxophone", trumpet: "Trumpet", trombone: "Trombone", clarinet: "Clarinet", flute: "Flute",
+};
+
+function showLineup(result) {
+  const l = result.lineup;
+  $("lineup").hidden = !l;
+  $("lineup-form").hidden = true;
+  if (!l) return;
+  const names = [];
+  for (const f of l.families) {
+    if (f === "horns") names.push(...l.horns.map((h) => LINEUP_NAMES[h]));
+    else if (f === "bass") names.push(l.bassKind === "double" ? "Double bass" : "Bass");
+    else names.push(LINEUP_NAMES[f]);
+  }
+  $("lineup-text").textContent = names.join(" · ") + (l.detected ? " (detected)" : "");
+  for (const box of $("lineup-form").querySelectorAll("input[type=checkbox]")) {
+    box.checked = HORN_KINDS.includes(box.value) ? l.horns.includes(box.value) : l.families.includes(box.value);
+  }
+  $("bass-kind").value = l.bassKind || "electric";
+}
+
+$("lineup-edit").onclick = () => { $("lineup-form").hidden = !$("lineup-form").hidden; };
+$("lineup-cancel").onclick = () => { $("lineup-form").hidden = true; };
+$("lineup-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const ticked = [...$("lineup-form").querySelectorAll("input:checked")].map((b) => b.value);
+  const horns = ticked.filter((v) => HORN_KINDS.includes(v));
+  const families = ticked.filter((v) => !HORN_KINDS.includes(v));
+  if (horns.length) families.push("horns");
+  if (!families.length) return alert("Tick at least one instrument.");
+  rememberPosition();
+  player.pause();
+  await fetch(`/api/jobs/${current.job.id}/lineup`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ families, horns, bassKind: $("bass-kind").value }),
+  });
+  refreshJobs();
+});
 
 function rememberPosition() {
   try { sessionStorage.setItem(`notewright.pos.${current.result.id}`, String(player.heardTime)); } catch {}
@@ -280,8 +327,15 @@ function buildMixer(result) {
     rows.append(tr);
   };
   addRow("Full recording", null, "original", null, null);
+  // Tracks that share one separated part (e.g. sax and trumpet in "Horns") share one
+  // recording slider, on the first of them.
+  const seen = new Set();
   for (const t of result.tracks.filter((t) => !t.silent)) {
-    addRow(t.name, COLORS[t.id], t.stem ? t.id : null, t.notes.length ? t.id : null, t);
+    const stem = t.stem ? stemOf(t) : null;
+    const first = stem && !seen.has(stem);
+    if (stem) seen.add(stem);
+    const label = t.group && first ? `${t.name} (recording: all ${t.group.toLowerCase()})` : t.name;
+    addRow(label, COLORS[t.id] || COLORS[t.group?.toLowerCase()] || "#888", first ? stem : null, t.notes.length ? t.id : null, t);
   }
 
   const band = result.tracks.some((t) => t.stem);
@@ -289,10 +343,16 @@ function buildMixer(result) {
   const pa = $("playalong");
   pa.innerHTML = "";
   pa.add(new Option("—", ""));
-  for (const t of result.tracks.filter((t) => t.stem && !t.silent)) pa.add(new Option(t.name.split(" (")[0], t.id));
+  const groups = new Map();
+  for (const t of result.tracks.filter((t) => t.stem && !t.silent)) {
+    if (!groups.has(stemOf(t))) groups.set(stemOf(t), t.group || t.name.split(" (")[0]);
+  }
+  for (const [id, name] of groups) pa.add(new Option(name, id));
   pa.onchange = () => (pa.value ? playAlong() : applyPreset("original"));
   $("backing").onchange = () => pa.value && playAlong();
 }
+
+const stemOf = (t) => t.stemId || t.id;
 
 function setLevels(media, synth) {
   for (const [id, input] of Object.entries(mix.media)) {
@@ -320,16 +380,28 @@ for (const b of document.querySelectorAll(".presets button")) b.onclick = () => 
 function playAlong() {
   const me = $("playalong").value;
   const real = $("backing").value === "recording";
+  const mine = new Set(current.result.tracks.filter((t) => stemOf(t) === me).map((t) => t.id));
   applyPreset("playalong");
   setLevels(
     (id) => (real && id !== "original" && id !== me ? 1 : 0),
-    (id) => (!real && id !== me ? 0.85 : 0),
+    (id) => (!real && !mine.has(id) ? 0.85 : 0),
   );
 }
 
+let loadingSounds = 0;
 player.onLoading = (pending) => {
-  $("sound-status").textContent = pending ? "Loading instrument sounds…" : "";
+  loadingSounds = pending;
+  $("sound-status").textContent = pending ? "Loading instrument sounds…" : syncText();
 };
+player.onSync = () => {
+  if (!loadingSounds) $("sound-status").textContent = syncText();
+};
+function syncText() {
+  const s = player.sync;
+  if (!s.measured) return "";
+  const ms = Math.round(s.delay * 1000);
+  return Math.abs(ms) < 5 ? "Notes in sync with the recording" : `Notes in sync with the recording (corrected by ${ms} ms)`;
+}
 
 // ---------- Transport ----------
 

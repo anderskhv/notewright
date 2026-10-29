@@ -58,3 +58,33 @@ def test_writes_musicxml_in_each_meter(tmp_path):
         xml = path.read_text()
         assert f"<beats>{sig}</beats>" in xml
         assert "<staves>2</staves>" in xml or 'number="2"' in xml
+
+
+def test_swing_is_written_as_straight_eighths():
+    beats = grid(32)
+    # Long-short pairs: on the beat and at 2/3 of it, the way swing is played.
+    notes = [[b * 0.5 + off, b * 0.5 + off + 0.1, 60 + b % 5, 80] for b in range(16) for off in (0, 0.5 * 0.66)]
+    meter = notation.detect_meter(notes, beats, 4)
+    assert meter.swing and not meter.compound
+    q = notation.quantise(notes, beats, meter)
+    assert [on for on, _, _ in q[:4]] == [0, Fraction(1, 2), 1, Fraction(3, 2)]
+
+
+def test_real_triplets_survive_in_swing():
+    beats = grid(32)
+    notes = [[b * 0.5 + off, b * 0.5 + off + 0.1, 60, 80] for b in range(16) for off in (0, 0.5 * 0.66)]
+    notes += [[8.0 + i / 6, 8.0 + i / 6 + 0.1, 64, 80] for i in range(3)]  # beat 16 in triplets
+    meter = notation.detect_meter(notes, beats, 4)
+    q = notation.quantise(sorted(notes), beats, meter)
+    assert Fraction(16) + Fraction(1, 3) in [on for on, _, _ in q]
+
+
+def test_ballad_slowing_down_gets_no_invented_beats():
+    from notewright.transcribe import _fill_gaps
+    import numpy as np
+
+    iv = np.array([0.7] * 30 + [1.3] * 12)  # an out-chorus taken much slower
+    beats = np.concatenate([[0], np.cumsum(iv)])
+    assert len(_fill_gaps(beats)) == len(beats)
+    gapped = np.delete(beats, 20)  # one beat really missing
+    assert len(_fill_gaps(gapped)) == len(beats)

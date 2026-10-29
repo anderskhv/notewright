@@ -78,6 +78,21 @@ def retune(job_id: str, body: Retune):
         raise HTTPException(404)
 
 
+class Lineup(BaseModel):
+    families: list[str]
+    horns: list[str] = []
+    bassKind: str = "electric"
+
+
+@app.post("/api/jobs/{job_id}/lineup")
+def lineup(job_id: str, body: Lineup):
+    """Rebuild the parts for a corrected line-up (no new separation)."""
+    try:
+        return pipeline.requeue(job_id, action={"type": "lineup", "lineup": body.model_dump()})
+    except KeyError:
+        raise HTTPException(404)
+
+
 @app.post("/api/jobs/{job_id}/separate")
 def separate(job_id: str):
     """Turn a piano-only transcription into a full-band one, reusing the downloaded audio."""
@@ -91,6 +106,15 @@ def separate(job_id: str):
 def delete(job_id: str):
     pipeline.delete_job(job_id)
     return {"ok": True}
+
+
+@app.get("/api/jobs/{job_id}/envelope")
+def envelope(job_id: str):
+    """Loudness of the recording per 10 ms (log scale): the player lines its output up with it."""
+    d = pipeline.jobs_dir() / job_id
+    if not (d / "result.json").exists():
+        raise HTTPException(404)
+    return FileResponse(pipeline.envelope(d), media_type="application/json")
 
 
 @app.get("/files/{job_id}/{path:path}")
