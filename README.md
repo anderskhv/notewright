@@ -25,13 +25,15 @@ On macOS with [Homebrew](https://brew.sh):
 brew install python@3.13 ffmpeg node
 ```
 
-Then:
+Then create the environment with `python3.13`. On a Mac, plain `python3` is Apple's older Python 3.9, which can't install the requirements.
+
 
 ```bash
 git clone https://github.com/anderskhv/notewright.git
 cd notewright
-python3 -m venv .venv
+python3.13 -m venv .venv
 source .venv/bin/activate
+pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
