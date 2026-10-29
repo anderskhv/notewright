@@ -62,6 +62,31 @@ def job(job_id: str):
     return record
 
 
+class Retune(BaseModel):
+    track: str
+    sensitivity: float
+
+
+@app.post("/api/jobs/{job_id}/retune")
+def retune(job_id: str, body: Retune):
+    """Read a piano/guitar/other track again with more or fewer notes."""
+    try:
+        return pipeline.requeue(
+            job_id, action={"type": "retune", "track": body.track, "sensitivity": min(1.0, max(0.0, body.sensitivity))}
+        )
+    except KeyError:
+        raise HTTPException(404)
+
+
+@app.post("/api/jobs/{job_id}/separate")
+def separate(job_id: str):
+    """Turn a piano-only transcription into a full-band one, reusing the downloaded audio."""
+    try:
+        return pipeline.requeue(job_id, mode="band", action=None)
+    except KeyError:
+        raise HTTPException(404)
+
+
 @app.delete("/api/jobs/{job_id}")
 def delete(job_id: str):
     pipeline.delete_job(job_id)

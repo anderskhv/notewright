@@ -10,16 +10,23 @@ def ffmpeg(*args: str) -> None:
     subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *args], check=True)
 
 
+# The browser copies are AAC in MP4: seeking in it is sample accurate in every browser,
+# unlike variable-bitrate MP3, which Safari and Firefox seek by estimate.
+BROWSER_EXT = ".m4a"
+
+
 def normalise(src: Path, job_dir: Path) -> Path:
-    """Write the analysis copy (44.1 kHz stereo wav) and the browser copy (mp3)."""
+    """Write the analysis copy (44.1 kHz stereo wav) and, if missing, the browser copy."""
     wav = job_dir / "audio.wav"
     ffmpeg("-i", str(src), "-ac", "2", "-ar", "44100", str(wav))
-    ffmpeg("-i", str(wav), "-codec:a", "libmp3lame", "-q:a", "2", str(job_dir / "audio.mp3"))
+    browser = job_dir / f"audio{BROWSER_EXT}"
+    if not browser.exists():
+        to_browser(wav, browser)
     return wav
 
 
-def to_mp3(wav: Path, mp3: Path) -> None:
-    ffmpeg("-i", str(wav), "-codec:a", "libmp3lame", "-q:a", "3", str(mp3))
+def to_browser(src: Path, dst: Path) -> None:
+    ffmpeg("-i", str(src), "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(dst))
 
 
 def download(url: str, job_dir: Path) -> tuple[Path, str]:

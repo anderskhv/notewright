@@ -53,10 +53,15 @@ def _load_piano_model(device: str):
     return _piano_model
 
 
-def polyphonic(path: Path, device: str, progress: Progress, onset_threshold: float = 0.3) -> tuple[Notes, list]:
-    """Transcribe with the piano model. Returns (notes, pedal [start, end] spans)."""
+def sensitivity_thresholds(sensitivity: float) -> tuple[float, float]:
+    """Note sensitivity 0..1 to the model's onset and frame thresholds (0.5 = its defaults)."""
+    s = min(1.0, max(0.0, sensitivity))
+    return 0.5 - 0.4 * s, 0.18 - 0.16 * s
+
+
+def model_output(path: Path, device: str, progress: Progress) -> dict[str, np.ndarray]:
+    """Run the piano model; returns its per-frame probabilities for every key."""
     import torch
-    from piano_transcription_inference.utilities import RegressionPostProcessor
 
     model = _load_piano_model(device)
     audio, _ = librosa.load(str(path), sr=16000, mono=True)
@@ -78,17 +83,34 @@ def polyphonic(path: Path, device: str, progress: Progress, onset_threshold: flo
         for key, value in out.items():
             outputs.setdefault(key, []).append(value.cpu().numpy())
         progress(min(1.0, (i + batch) / len(segments)))
-    output_dict = {k: model.deframe(np.concatenate(v, axis=0))[:audio_len] for k, v in outputs.items()}
+    return {k: model.deframe(np.concatenate(v, axis=0))[:audio_len] for k, v in outputs.items()}
 
+
+def save_output(output: dict[str, np.ndarray], path: Path) -> None:
+    # float16 keeps a five-minute song to a few tens of MB.
+    np.savez_compressed(path, **{k: v.astype(np.float16) for k, v in output.items()})
+
+
+def load_output(path: Path) -> dict[str, np.ndarray]:
+    with np.load(path) as data:
+        return {k: data[k].astype(np.float32) for k in data.files}
+
+
+def notes_from_output(output: dict[str, np.ndarray], sensitivity: float) -> tuple[Notes, list]:
+    """Read notes out of the model's probabilities. Cheap, so sensitivity can be changed later."""
+    from piano_transcription_inference import config
+    from piano_transcription_inference.utilities import RegressionPostProcessor
+
+    onset, frame = sensitivity_thresholds(sensitivity)
     post = RegressionPostProcessor(
-        model.frames_per_second,
-        classes_num=model.classes_num,
-        onset_threshold=onset_threshold,
-        offset_threshold=model.offset_threshod,
-        frame_threshold=model.frame_threshold,
-        pedal_offset_threshold=model.pedal_offset_threshold,
+        config.frames_per_second,
+        classes_num=config.classes_num,
+        onset_threshold=onset,
+        offset_threshold=0.3,
+        frame_threshold=frame,
+        pedal_offset_threshold=0.2,
     )
-    note_events, pedal_events = post.output_dict_to_midi_events(output_dict)
+    note_events, pedal_events = post.output_dict_to_midi_events(output)
     notes = [
         [round(float(e["onset_time"]), 3), round(float(e["offset_time"]), 3), int(e["midi_note"]), int(e["velocity"])]
         for e in note_events

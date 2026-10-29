@@ -12,7 +12,8 @@ Everything runs on your own computer. Notewright uses no accounts, no cloud serv
 - **Piano roll**, Synthesia style, with each instrument in its own colour.
 - **Playback** of the original, the separated parts and the transcription (played on sampled instruments), all in sync. Each one has its own volume.
 - **Speed** from 25% to 150% without changing pitch, plus A–B looping for practice.
-- **Play along**: mute your instrument and keep either the real band (the separated recording) or the transcribed band.
+- **Play along**: mute your instrument and keep either the real band (the separated recording) or the transcribed band. A song transcribed in piano mode can be separated later with one click, without downloading it again.
+- **More or fewer notes**: if quiet notes are missing, such as comping chords under a solo, move the slider above the sheet music. Notewright then reads that part again from the saved model output, which takes seconds.
 - **Export** to MusicXML (opens in MuseScore, Sibelius, Finale or Dorico) and to MIDI.
 
 ## Install
@@ -72,6 +73,10 @@ On a recent laptop CPU, piano mode takes about as long as the song itself, and f
 | Rendering and sound | [OpenSheetMusicDisplay](https://opensheetmusicdisplay.org) (BSD-3-Clause) and [smplr](https://github.com/danigb/smplr) (MIT) |
 
 The sheet music is written on the beat grid detected in the recording, so tempo changes and rubato don't push the bar lines out of place. The player uses the same grid to move the cursor.
+
+## Tips
+
+- **Piano with a band** (jazz, pop): use full band mode, or press "Separate instruments" afterwards. The piano model then hears the piano on its own, so it picks up much more of the quiet voicings than it does from the full mix.
 
 ## Limits
 

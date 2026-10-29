@@ -125,6 +125,8 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
 .sheet-tools { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid #ebe8df; }
 .sheet-tools select, .sheet-tools button { background: #fff; color: #1d1d1f; border-color: #dedad0; }
 .sheet-tools .spacer { flex: 1; }
+.sheet-tools .detail { display: flex; align-items: center; gap: 6px; color: #6b6b70; font-size: 13px; }
+.sheet-tools .detail input { width: 120px; accent-color: #3f6fe0; }
 .sheet-tools .link { color: #3f6fe0; text-decoration: none; }
 .icon { width: 30px; padding: 4px 0; }
 .sheet { flex: 1; overflow-y: auto; position: relative; padding: 0 8px; }

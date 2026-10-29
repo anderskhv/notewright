@@ -2,8 +2,14 @@
 // playing the transcription, all locked to one clock and one playback speed.
 import { DrumMachine, Soundfont, SplendidGrandPiano } from "./vendor/smplr.mjs";
 
+// Sync model: the full recording is the master clock, because it is what you hear.
+// The AudioContext clock interpolates between its position reports and is slewed
+// toward it; stems are pulled onto it by nudging their speed; sampled notes are
+// scheduled on the AudioContext clock. All media plays through the AudioContext,
+// so everything shares one output latency (which matters with Bluetooth headphones).
 const LOOKAHEAD = 0.25; // seconds of song time scheduled ahead
-const DRIFT = 0.12; // re-sync a media element once it is this far off
+const SLEW = 0.08; // fraction of the clock error corrected per tick
+const HARD = 0.25; // past this, jump instead of slewing
 
 function lowerBound(notes, t) {
   let lo = 0, hi = notes.length;
@@ -61,10 +67,17 @@ export class Player {
     return this.anchorSong + Math.max(0, this.ctx.currentTime - this.anchorCtx) * this.rate;
   }
 
+  // The song position you are hearing right now: what was rendered one output latency ago.
+  get heardTime() {
+    if (!this.playing) return this.position;
+    const latency = (this.ctx.outputLatency || 0) + (this.ctx.baseLatency || 0);
+    return Math.max(0, this.time - latency * this.rate);
+  }
+
   load(result, base) {
     this.pause();
     this.position = 0;
-    for (const el of this.media.values()) { el.pause(); el.removeAttribute("src"); el.load(); }
+    for (const m of this.media.values()) { m.el.pause(); m.el.removeAttribute("src"); m.el.load(); m.node.disconnect(); }
     for (const s of this.synths.values()) s.instrument?.dispose();
     this.media.clear();
     this.synths.clear();
@@ -111,8 +124,11 @@ export class Player {
     el.src = src;
     el.preload = "auto";
     el.preservesPitch = true;
-    el.volume = volume;
-    this.media.set(id, el);
+    const gain = this.ctx.createGain();
+    gain.gain.value = volume;
+    const node = this.ctx.createMediaElementSource(el);
+    node.connect(gain).connect(this.ctx.destination);
+    this.media.set(id, { el, gain, node });
   }
 
   _applyVolume(synth) {
@@ -120,8 +136,8 @@ export class Player {
   }
 
   setMediaVolume(id, v) {
-    const el = this.media.get(id);
-    if (el) el.volume = Math.max(0, Math.min(1, v));
+    const m = this.media.get(id);
+    if (m) m.gain.gain.value = Math.max(0, Math.min(1, v));
   }
 
   setSynthVolume(id, v) {
@@ -133,28 +149,39 @@ export class Player {
   }
 
   async play() {
-    if (this.playing) return;
+    if (this.playing || this._starting) return;
     if (this.position >= this.duration - 0.05) this.position = 0;
+    const token = (this._starting = {});
     await this.ctx.resume();
-    this.anchorSong = this.position;
-    this.anchorCtx = this.ctx.currentTime + 0.06;
-    for (const s of this.synths.values()) s.pointer = lowerBound(s.notes, this.position);
-    for (const el of this.media.values()) {
+    const els = [...this.media.values()].map((m) => m.el);
+    for (const el of els) {
       el.playbackRate = this.rate;
       el.currentTime = this.position;
-      el.play().catch(() => {});
     }
+    // Start the clock only once the recording is really playing.
+    await Promise.all(els.map((el) => el.play().catch(() => {})));
+    if (this._starting !== token) return; // paused or seeked meanwhile
+    this._starting = null;
+    const master = this.media.get("original").el;
+    this.anchorSong = master.currentTime;
+    this.anchorCtx = this.ctx.currentTime;
+    for (const s of this.synths.values()) s.pointer = lowerBound(s.notes, this.anchorSong);
     this.playing = true;
     this._timer = setInterval(() => this._tick(), 25);
     this._tick();
   }
 
   pause() {
+    if (this._starting) {
+      this._starting = null;
+      for (const m of this.media.values()) m.el.pause();
+      return;
+    }
     if (!this.playing) return;
     this.position = Math.min(this.time, this.duration);
     this.playing = false;
     clearInterval(this._timer);
-    for (const el of this.media.values()) el.pause();
+    for (const m of this.media.values()) m.el.pause();
     for (const s of this.synths.values()) s.instrument?.stop();
   }
 
@@ -163,17 +190,18 @@ export class Player {
   seek(t) {
     t = Math.max(0, Math.min(this.duration, t));
     const wasPlaying = this.playing;
+    const starting = !!this._starting;
     this.pause();
     this.position = t;
-    for (const el of this.media.values()) el.currentTime = t;
-    if (wasPlaying) this.play();
+    for (const m of this.media.values()) m.el.currentTime = t;
+    if (wasPlaying || starting) this.play();
   }
 
   setRate(rate) {
     const wasPlaying = this.playing;
     this.pause();
     this.rate = rate;
-    for (const el of this.media.values()) el.playbackRate = rate;
+    for (const m of this.media.values()) m.el.playbackRate = rate;
     if (wasPlaying) this.play();
   }
 
@@ -190,16 +218,14 @@ export class Player {
       this.onEnd();
       return;
     }
-    for (const el of this.media.values()) {
-      if (!el.paused && Math.abs(el.currentTime - t) > DRIFT) el.currentTime = t;
-    }
+    this._sync();
     const horizon = t + LOOKAHEAD * this.rate;
     const now = this.ctx.currentTime;
     for (const s of this.synths.values()) {
       const { notes } = s;
       while (s.pointer < notes.length && notes[s.pointer].start < horizon) {
         const n = notes[s.pointer++];
-        if (!s.ready || s.volume === 0 || n.start < t - 0.05) continue;
+        if (!s.ready || s.volume === 0 || n.start < this.time - 0.05) continue;
         const when = this.anchorCtx + (n.start - this.anchorSong) / this.rate;
         const note = s.drumMap ? s.drumMap[n.pitch] || s.drumMap[36] : n.pitch;
         s.instrument.start({
@@ -208,6 +234,35 @@ export class Player {
           time: Math.max(when, now),
           duration: s.drumMap ? undefined : (n.sound - n.start) / this.rate,
         });
+      }
+    }
+  }
+
+  _sync() {
+    const master = this.media.get("original").el;
+    if (master.paused || master.seeking) return;
+    const m = master.currentTime;
+    const err = m - this.time;
+    if (Math.abs(err) > HARD) {
+      this.anchorSong = m;
+      this.anchorCtx = this.ctx.currentTime;
+      for (const s of this.synths.values()) {
+        s.instrument?.stop();
+        s.pointer = lowerBound(s.notes, m);
+      }
+    } else if (Math.abs(err) > 0.005) {
+      this.anchorSong += err * SLEW;
+    }
+    for (const [id, { el }] of this.media) {
+      if (id === "original" || el.paused || el.seeking) continue;
+      const diff = el.currentTime - m;
+      if (Math.abs(diff) > HARD) {
+        el.currentTime = m;
+        el.playbackRate = this.rate;
+      } else {
+        // Pull the stem in by playing it up to 5% faster or slower; inaudible with pitch kept.
+        const nudge = Math.abs(diff) > 0.01 ? Math.max(-0.05, Math.min(0.05, -diff * 2)) : 0;
+        el.playbackRate = this.rate * (1 + nudge);
       }
     }
   }

@@ -83,7 +83,7 @@ async function showJob(job) {
     $("song").hidden = true;
     $("progress").hidden = false;
     $("progress-title").textContent = job.title;
-    $("progress-stage").textContent = job.status === "queued" ? "Waiting for the previous song to finish" : job.stage;
+    $("progress-stage").textContent = job.status === "queued" ? "Waiting for the previous job to finish" : job.stage;
     $("progress-bar").style.width = `${Math.round(job.progress * 100)}%`;
     $("progress-error").hidden = job.status !== "error";
     $("progress-error").textContent = job.error || "";
@@ -92,7 +92,7 @@ async function showJob(job) {
   }
   if (current && current.job.id === job.id && current.result) return;
   const base = `/files/${job.id}/`;
-  const result = await (await fetch(base + "result.json")).json();
+  const result = await (await fetch(base + "result.json", { cache: "no-store" })).json();
   current = { job, result, base };
   openSong(result, base);
 }
@@ -163,6 +163,9 @@ function openSong(result, base) {
   const sheetSelect = $("sheet-track");
   sheetSelect.innerHTML = "";
   for (const t of tracks.filter((t) => t.sheet)) sheetSelect.add(new Option(t.name, t.id));
+  let wanted = null;
+  try { wanted = sessionStorage.getItem("notewright.sheet"); } catch {}
+  if (wanted && tracks.some((t) => t.id === wanted && t.sheet)) sheetSelect.value = wanted;
   sheetSelect.onchange = () => loadSheet(sheetSelect.value);
   if (sheetSelect.options.length) loadSheet(sheetSelect.value);
   else $("sheet").innerHTML = '<p class="hint">No pitched notes were found, so there is no sheet music.</p>';
@@ -171,15 +174,49 @@ function openSong(result, base) {
   applyPreset("original");
   setView(localStorage.getItem("notewright.view") || "both");
   updateLoopButtons();
+  $("separate").hidden = (result.mode || current.job.mode) === "band";
+  $("song-error").hidden = !current.job.error;
+  $("song-error").textContent = current.job.error ? `The last change didn't work: ${current.job.error}` : "";
+
+  // Back where you were, after reading a part again or separating instruments.
+  const saved = Number(sessionStorage.getItem(`notewright.pos.${result.id}`));
+  if (saved) player.seek(saved);
 }
+
+function rememberPosition() {
+  try { sessionStorage.setItem(`notewright.pos.${current.result.id}`, String(player.heardTime)); } catch {}
+}
+
+$("detail").addEventListener("change", async () => {
+  const id = $("sheet-track").value;
+  rememberPosition();
+  player.pause();
+  try { sessionStorage.setItem("notewright.sheet", id); } catch {}
+  await fetch(`/api/jobs/${current.job.id}/retune`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ track: id, sensitivity: $("detail").value / 100 }),
+  });
+  refreshJobs();
+});
+
+$("separate").onclick = async () => {
+  rememberPosition();
+  player.pause();
+  await fetch(`/api/jobs/${current.job.id}/separate`, { method: "POST" });
+  refreshJobs();
+};
 
 async function loadSheet(trackId) {
   const t = current.tracks.find((x) => x.id === trackId);
+  // Only the piano model's parts can be read again with more or fewer notes.
+  $("detail-wrap").hidden = t.sensitivity === undefined && !["piano", "guitar", "other"].includes(t.id);
+  $("detail").value = Math.round((t.sensitivity ?? 0.5) * 100);
   $("dl-xml").href = current.base + t.sheet;
   $("sheet").innerHTML = '<p class="hint">Rendering sheet music…</p>';
   try {
-    await sheet.load(current.base + t.sheet, current.result.beats, current.result.beatQuarters);
-    sheet.update(player.time);
+    await sheet.load(`${current.base}${t.sheet}?v=${current.result.version || 0}`, current.result.beats, current.result.beatQuarters);
+    sheet.update(player.heardTime);
   } catch (err) {
     console.error(err);
     $("sheet").innerHTML = '<p class="error">The sheet music could not be rendered. The MusicXML download still works in MuseScore.</p>';
@@ -235,7 +272,7 @@ function buildMixer(result) {
       box.setAttribute("aria-label", `Show ${track.name} in the piano roll`);
       box.onchange = () => {
         current.tracks.find((t) => t.id === track.id).visible = box.checked;
-        roll.draw(player.time);
+        roll.draw(player.heardTime);
       };
       show.append(box);
     }
@@ -314,8 +351,8 @@ $("speed").addEventListener("input", () => {
   player.setRate(v / 100);
 });
 
-$("loop-a").onclick = () => { player.loop.a = player.time; fixLoop(); };
-$("loop-b").onclick = () => { player.loop.b = player.time; fixLoop(); };
+$("loop-a").onclick = () => { player.loop.a = player.heardTime; fixLoop(); };
+$("loop-b").onclick = () => { player.loop.b = player.heardTime; fixLoop(); };
 $("loop-toggle").onclick = () => {
   const l = player.loop;
   if (l.a === null || l.b === null) {
@@ -363,7 +400,7 @@ $("zoom-out").onclick = () => sheet.setZoom(sheet.zoom - 0.1);
 function frame() {
   requestAnimationFrame(frame);
   if (current?.result) {
-    const t = player.time;
+    const t = player.heardTime;
     document.body.classList.toggle("playing", player.playing);
     if (!dragging) {
       $("time").textContent = fmt(t);

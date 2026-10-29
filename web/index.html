@@ -52,6 +52,7 @@
           <div>
             <h1 id="song-title"></h1>
             <p id="song-meta" class="meta"></p>
+            <p id="song-error" class="error" hidden></p>
           </div>
           <div class="views" role="tablist">
             <button data-view="sheet" class="tab">Sheet</button>
@@ -64,6 +65,9 @@
           <div class="sheet-pane" id="sheet-pane">
             <div class="sheet-tools">
               <label>Part <select id="sheet-track"></select></label>
+              <label id="detail-wrap" class="detail" title="Too few notes, such as quiet chords left out? Move right and the part is read again.">
+                Fewer notes <input id="detail" type="range" min="0" max="100" step="5"> More notes
+              </label>
               <span class="spacer"></span>
               <button id="zoom-out" class="icon" title="Smaller" aria-label="Smaller">−</button>
               <button id="zoom-in" class="icon" title="Larger" aria-label="Larger">+</button>
@@ -110,6 +114,7 @@
                 <option value="transcription">the transcribed band</option>
               </select></label>
             </span>
+            <button id="separate" hidden title="Splits the recording into piano, vocals, guitar, bass, drums and other, so you can mute your part. Takes a few minutes.">Separate instruments to play along</button>
             <span id="sound-status" class="hint"></span>
           </div>
           <table>
