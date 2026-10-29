@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Notewright</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%233f6fe0'/><path d='M12 22V9l11-3v13' stroke='white' stroke-width='2.4' fill='none'/><circle cx='9.5' cy='22' r='3' fill='white'/><circle cx='20.5' cy='19' r='3' fill='white'/></svg>">
+  <link rel="stylesheet" href="style.css">
+  <script src="vendor/opensheetmusicdisplay.min.js"></script>
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header class="top">
+    <div class="brand">Notewright</div>
+    <form id="new-job" class="new-job">
+      <input id="url" type="url" placeholder="Paste a YouTube link" autocomplete="off" required>
+      <div class="segmented" role="radiogroup" aria-label="What to transcribe">
+        <label><input type="radio" name="mode" value="piano" checked><span>Piano</span></label>
+        <label><input type="radio" name="mode" value="band"><span>Full band</span></label>
+      </div>
+      <button type="submit" class="primary">Transcribe</button>
+      <label class="upload" title="Transcribe an audio file from your computer">
+        <input id="file" type="file" accept="audio/*,video/*">Upload a file
+      </label>
+    </form>
+  </header>
+
+  <div class="layout">
+    <aside class="library">
+      <h2>Library</h2>
+      <ul id="jobs"></ul>
+      <p id="jobs-empty" class="hint">Transcriptions you make appear here.</p>
+    </aside>
+
+    <main id="main">
+      <section id="welcome" class="welcome">
+        <h1>Paste a link, get the notes</h1>
+        <p><b>Piano</b> transcribes a piano recording into sheet music and a piano roll.</p>
+        <p><b>Full band</b> also separates vocals, guitar, bass, drums and other parts, so you can mute your instrument and play along with the rest.</p>
+        <p class="hint">Everything runs on this computer. Expect about a minute of work per minute of music for piano, a few minutes for full band.</p>
+      </section>
+
+      <section id="progress" class="progress-view" hidden>
+        <h1 id="progress-title"></h1>
+        <p id="progress-stage"></p>
+        <div class="bar"><div id="progress-bar"></div></div>
+        <p id="progress-error" class="error" hidden></p>
+      </section>
+
+      <section id="song" class="song" hidden>
+        <div class="song-head">
+          <div>
+            <h1 id="song-title"></h1>
+            <p id="song-meta" class="meta"></p>
+          </div>
+          <div class="views" role="tablist">
+            <button data-view="sheet" class="tab">Sheet</button>
+            <button data-view="roll" class="tab">Piano roll</button>
+            <button data-view="both" class="tab">Both</button>
+          </div>
+        </div>
+
+        <div class="stage" id="stage">
+          <div class="sheet-pane" id="sheet-pane">
+            <div class="sheet-tools">
+              <label>Part <select id="sheet-track"></select></label>
+              <span class="spacer"></span>
+              <button id="zoom-out" class="icon" title="Smaller" aria-label="Smaller">−</button>
+              <button id="zoom-in" class="icon" title="Larger" aria-label="Larger">+</button>
+              <a id="dl-xml" class="link" download>MusicXML</a>
+              <a id="dl-midi" class="link" download>MIDI</a>
+            </div>
+            <div id="sheet" class="sheet"><p class="hint">Rendering sheet music…</p></div>
+          </div>
+          <div class="roll-pane" id="roll-pane">
+            <canvas id="roll"></canvas>
+          </div>
+        </div>
+
+        <div class="transport">
+          <button id="play" class="play" aria-label="Play">
+            <svg viewBox="0 0 24 24" class="i-play"><path d="M7 4.5v15l13-7.5z"/></svg>
+            <svg viewBox="0 0 24 24" class="i-pause"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>
+          </button>
+          <span id="time" class="time">0:00</span>
+          <input id="seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Position">
+          <span id="duration" class="time">0:00</span>
+          <div class="speed">
+            <label for="speed">Speed</label>
+            <input id="speed" type="range" min="25" max="150" step="5" value="100">
+            <output id="speed-out">100%</output>
+          </div>
+          <div class="loop">
+            <button id="loop-a" title="Loop start at the current position">A</button>
+            <button id="loop-b" title="Loop end at the current position">B</button>
+            <button id="loop-toggle" title="Repeat between A and B">Loop</button>
+          </div>
+        </div>
+
+        <div class="mixer">
+          <div class="presets">
+            <span>Listen to</span>
+            <button data-preset="original">Recording</button>
+            <button data-preset="transcription">Transcription</button>
+            <button data-preset="both">Both</button>
+            <span id="playalong-wrap" class="playalong">
+              <label>Play along as <select id="playalong"></select></label>
+              <label>with <select id="backing">
+                <option value="recording">the real band</option>
+                <option value="transcription">the transcribed band</option>
+              </select></label>
+            </span>
+            <span id="sound-status" class="hint"></span>
+          </div>
+          <table>
+            <thead><tr><th>Part</th><th>Recording</th><th>Transcription</th><th>Show</th></tr></thead>
+            <tbody id="mix-rows"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>
