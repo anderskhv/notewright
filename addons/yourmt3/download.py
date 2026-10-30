@@ -1,5 +1,11 @@
 """Fetch YourMT3+'s code and the YPTF.MoE+Multi (noPS) checkpoint from its Hugging Face Space."""
-from huggingface_hub import snapshot_download
+import os
+
+# The newer "Xet" transfer can hang at 0% on some networks; the plain HTTP download
+# is reliable and resumes where it stopped if run again.
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+
+from huggingface_hub import snapshot_download  # noqa: E402
 
 snapshot_download(
     "mimbres/YourMT3", repo_type="space", local_dir="space",
