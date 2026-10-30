@@ -67,7 +67,7 @@ On a recent laptop CPU, piano mode takes about as long as the song itself, and f
 | Separate instruments | [Demucs](https://github.com/facebookresearch/demucs) `htdemucs_6s` (MIT) |
 | Recognise instruments, regroup parts | [PANNs](https://github.com/qiuqiangkong/panns_inference) sound-event model, Kong et al. 2020 (MIT), plus note-content matching between parts |
 | Horns (sax, trumpet, trombone) | One melodic line from the horn part, divided between the horns by register and phrase |
-| Piano and horns together | The piano is transcribed from piano and horn parts together; then each piano note's harmonics are filtered out of the horn audio (score-informed separation), and notes that start with a piano chord and die away are dropped from the horn line |
+| Piano and horns together | The piano is transcribed twice, from its own part and from piano and horn parts together with the horn line filtered out (a loud horn hides quiet comping), and the notes are combined; then each piano note's harmonics are filtered out of the horn audio (score-informed separation), and notes that start with a piano chord and die away are dropped from the horn line |
 | Piano, guitar, other | [High-resolution piano transcription](https://github.com/qiuqiangkong/piano_transcription_inference), Kong et al. 2021 (MIT) |
 | Bass, vocal melody | Probabilistic YIN pitch tracking ([librosa](https://librosa.org)) plus onset detection |
 | Drums | Onset detection plus a three-band energy split into kick, snare and hi-hat |

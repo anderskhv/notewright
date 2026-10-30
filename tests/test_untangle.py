@@ -52,3 +52,13 @@ def test_separation_moves_piano_out_and_keeps_the_horn():
     assert resid_piano < 0.3  # little piano left in the horn part
     assert np.corrcoef(h_out[0], horn)[0, 1] > 0.9  # the horn is intact
     assert np.allclose(p_out + h_out, mix, atol=1e-3)  # nothing lost: the parts still add up
+
+
+def test_horn_is_filtered_out_for_the_piano_model():
+    horn = tone(70, 2.0, [1, 0.7, 0.5, 0.4, 0.3])
+    piano = 0.15 * tone(55, 2.0, [1, 0.6, 0.4, 0.3], decay=1.5)  # quiet comping under a loud horn
+    mix = horn + piano
+    heard = untangle.without_horns(mix[None, :], SR, [[0.0, 2.0, 70, 90]])[0]
+    # Buried before (the horn dominates), dominant after.
+    assert np.corrcoef(mix, piano)[0, 1] < 0.3
+    assert np.corrcoef(heard, piano)[0, 1] > 0.7

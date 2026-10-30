@@ -170,3 +170,19 @@ def clean_line(notes: list, y: np.ndarray, sr: int, piano_onsets: np.ndarray) ->
                 continue  # a short note on a piano chord just as a phrase ends: the chord ringing
         out.append(n)
     return out
+
+
+def without_horns(y: np.ndarray, sr: int, horn_notes: list) -> np.ndarray:
+    """The audio with the horn line's harmonics filtered out, for the piano model to hear.
+
+    A loud horn on top of quiet comping hides the comping from a model trained on solo
+    piano; with the horn's partials removed the chords come through.
+    """
+    spec = _stft(y)
+    n_bins, frames = spec.shape[1], spec.shape[2]
+    keep = np.ones((n_bins, frames), dtype=np.float32)
+    for start, end, pitch, _ in horn_notes:
+        a, b = max(0, int((start - 0.03) * sr / HOP)), min(frames, int((end + 0.1) * sr / HOP) + 1)
+        for s in _harmonic_bins(pitch, sr, n_bins):
+            keep[s, a:b] = 0.03
+    return _istft(spec * keep[None, :, :], y.shape[-1])
