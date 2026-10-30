@@ -161,7 +161,7 @@ function openSong(result, base) {
     notes: t.notes.map(([start, end, pitch]) => ({ start, end, pitch })),
   }));
   current.tracks = tracks;
-  roll.setData(tracks, result.beats, result.beatsPerBar);
+  roll.setData(tracks, result.beats, result.beatsPerBar, result.chords || []);
 
   const sheetSelect = $("sheet-track");
   sheetSelect.innerHTML = "";
@@ -258,7 +258,8 @@ $("separate").onclick = async () => {
 async function loadSheet(trackId) {
   const t = current.tracks.find((x) => x.id === trackId);
   // Only the piano model's parts can be read again with more or fewer notes.
-  $("detail-wrap").hidden = t.sensitivity === undefined && !["piano", "guitar", "other"].includes(t.id);
+  $("detail-wrap").hidden = t.source === "yourmt3" || (t.sensitivity === undefined && !["piano", "guitar", "other"].includes(t.id));
+  $("source-note").hidden = t.source !== "yourmt3";
   $("detail").value = Math.round((t.sensitivity ?? 0.5) * 100);
   $("dl-xml").href = current.base + t.sheet;
   $("sheet").innerHTML = '<p class="hint">Rendering sheet music…</p>';
@@ -273,10 +274,10 @@ async function loadSheet(trackId) {
 
 function setView(view) {
   $("stage").dataset.view = view;
-  for (const b of document.querySelectorAll(".views .tab")) b.classList.toggle("active", b.dataset.view === view);
+  for (const b of document.querySelectorAll(".views .tab[data-view]")) b.classList.toggle("active", b.dataset.view === view);
   try { localStorage.setItem("notewright.view", view); } catch {}
 }
-for (const b of document.querySelectorAll(".views .tab")) b.onclick = () => setView(b.dataset.view);
+for (const b of document.querySelectorAll(".views .tab[data-view]")) b.onclick = () => setView(b.dataset.view);
 
 // ---------- Mixer ----------
 
@@ -460,8 +461,33 @@ $("roll").addEventListener("wheel", (e) => {
   player.seek(player.time - roll.pxToSeconds(e.deltaY));
 }, { passive: false });
 
+// ---------- Full screen ----------
+
+let idleTimer = null;
+function poke() {
+  document.body.classList.remove("idle");
+  clearTimeout(idleTimer);
+  if (document.body.classList.contains("focus")) {
+    idleTimer = setTimeout(() => { if (player.playing) document.body.classList.add("idle"); }, 2500);
+  }
+}
+function setFocus(on) {
+  document.body.classList.toggle("focus", on);
+  if (on && !document.fullscreenElement) document.documentElement.requestFullscreen?.().catch(() => {});
+  if (!on && document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+  poke();
+}
+$("focus").onclick = () => setFocus(true);
+$("focus-exit").onclick = () => setFocus(false);
+document.addEventListener("fullscreenchange", () => {
+  if (!document.fullscreenElement) setFocus(false);
+});
+for (const ev of ["mousemove", "touchstart", "keydown"]) document.addEventListener(ev, poke, { passive: true });
+
 document.addEventListener("keydown", (e) => {
   if (!current?.result || e.target.matches("input[type=url], input[type=text], select")) return;
+  if (e.key === "f" || e.key === "F") setFocus(!document.body.classList.contains("focus"));
+  if (e.key === "Escape" && document.body.classList.contains("focus")) setFocus(false);
   if (e.code === "Space") { e.preventDefault(); player.toggle(); }
   if (e.code === "ArrowLeft") player.seek(player.time - 5);
   if (e.code === "ArrowRight") player.seek(player.time + 5);

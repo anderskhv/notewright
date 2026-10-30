@@ -58,6 +58,7 @@
             <button data-view="sheet" class="tab">Sheet</button>
             <button data-view="roll" class="tab">Piano roll</button>
             <button data-view="both" class="tab">Both</button>
+            <button id="focus" class="tab" title="Just the music, full screen (F)">Full screen</button>
           </div>
         </div>
 
@@ -68,6 +69,7 @@
               <label id="detail-wrap" class="detail" title="Too few notes, such as quiet chords left out? Move right and the part is read again.">
                 Fewer notes <input id="detail" type="range" min="0" max="100" step="5"> More notes
               </label>
+              <span id="source-note" class="source-note" hidden title="Transcribed by the YourMT3+ add-on, which was trained on band recordings">Piano notes by YourMT3+</span>
               <span class="spacer"></span>
               <button id="zoom-out" class="icon" title="Smaller" aria-label="Smaller">−</button>
               <button id="zoom-in" class="icon" title="Larger" aria-label="Larger">+</button>
@@ -94,6 +96,7 @@
             <input id="speed" type="range" min="25" max="150" step="5" value="100">
             <output id="speed-out">100%</output>
           </div>
+          <button id="focus-exit" class="focus-only" title="Back to the full view (Esc)">Exit full screen</button>
           <div class="loop">
             <button id="loop-a" title="Loop start at the current position">A</button>
             <button id="loop-b" title="Loop end at the current position">B</button>

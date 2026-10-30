@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-from . import audio, instruments, notation, transcribe, untangle
+from . import audio, chords, instruments, notation, transcribe, untangle, yourmt3
 from .config import DATA_DIR, device
 
 # Per family: transcriber and sampler voice in the browser. Horns get one track per horn.
@@ -206,13 +206,17 @@ def run(job: Job) -> None:
     if band:
         from .separate import separate
 
-        stems = separate(wav, d / "stems", dev, job.stage("Separating instruments", 0.08, 0.4))
+        has_ymt3 = yourmt3.available()
+        stems = separate(wav, d / "stems", dev, job.stage("Separating instruments", 0.08, 0.3 if has_ymt3 else 0.4))
+        if has_ymt3:
+            notes = yourmt3.transcribe(wav, job.stage("Transcribing with YourMT3+", 0.3, 0.45))
+            (d / "yourmt3.json").write_text(json.dumps(notes))
         # Keep Demucs' own stems, so the line-up can be changed later without separating again.
         raw = d / "stems" / "raw"
         raw.mkdir(exist_ok=True)
         for name, path in stems.items():
             audio.to_browser(path, raw / f"{name}{audio.BROWSER_EXT}")
-        job.stage("Recognising instruments", 0.4, 0.45)
+        job.stage("Recognising instruments", 0.45 if has_ymt3 else 0.4, 0.47 if has_ymt3 else 0.45)
         try:
             lineup = instruments.normalise_lineup(instruments.detect(wav, stems, dev))
             lineup["source"] = "detected"
@@ -220,7 +224,7 @@ def run(job: Job) -> None:
             traceback.print_exc()
             lineup = instruments.normalise_lineup(instruments.lineup_by_level(wav, stems))
             lineup["source"] = "loudness"
-        tracks = _band(job, {n: _read(p) for n, p in stems.items()}, lineup, 0.45)
+        tracks = _band(job, {n: _read(p) for n, p in stems.items()}, lineup, 0.47 if has_ymt3 else 0.45)
         extra["lineup"] = lineup
     else:
         report = job.stage("Transcribing piano", 0.08, 0.95)
@@ -278,9 +282,12 @@ def _band(job: Job, stems: dict[str, tuple[np.ndarray, int]], lineup: dict, star
     families = lineup["families"]
     span = (0.95 - start - 0.05) / max(1, len(families))
     piano_done = None
+    ymt3 = _yourmt3_piano(d, lineup)
     if "piano" in families and "horns" in families:
         lo = start + 0.05
-        piano_done = _untangle(job, parts, paths, sr, lo, lo + 2 * span)
+        piano_done = _untangle(job, parts, paths, sr, lo, lo + 2 * span, ymt3)
+    elif "piano" in families and ymt3 is not None:
+        piano_done = {"piano": _ymt3_track(ymt3)}
     for i, family in enumerate(families):
         kind, voice = FAMILY_TRACKS[family]
         lo = start + 0.05 + i * span
@@ -290,7 +297,7 @@ def _band(job: Job, stems: dict[str, tuple[np.ndarray, int]], lineup: dict, star
             tracks.append({**piano_done["piano"], **stem})
             continue
         if family == "horns":
-            if piano_done:
+            if piano_done and "horns" in piano_done:
                 line = piano_done["horns"]
             else:
                 # Gate: in another instrument's solo the horn part holds only leakage.
@@ -316,7 +323,19 @@ def _band(job: Job, stems: dict[str, tuple[np.ndarray, int]], lineup: dict, star
     return tracks
 
 
-def _untangle(job: Job, parts: dict, paths: dict, sr: int, lo: float, hi: float) -> dict:
+def _yourmt3_piano(d: Path, lineup: dict) -> list | None:
+    path = d / "yourmt3.json"
+    if not path.exists():
+        return None
+    return yourmt3.piano_notes(json.loads(path.read_text()), "guitar" in lineup["families"])
+
+
+def _ymt3_track(notes: list) -> dict:
+    return {"id": "piano", "name": instruments.NAMES["piano"], "voice": "piano", "notes": notes, "pedals": [],
+            "source": "yourmt3"}
+
+
+def _untangle(job: Job, parts: dict, paths: dict, sr: int, lo: float, hi: float, ymt3: list | None) -> dict:
     """Piano and horns together: see untangle.py. Rewrites both parts' audio."""
     d, dev = job.dir, device()
     step = (hi - lo) / 4
@@ -324,26 +343,29 @@ def _untangle(job: Job, parts: dict, paths: dict, sr: int, lo: float, hi: float)
     job.stage("Listening to the horns", lo, lo + step)
     line = transcribe.monophonic(paths["horns"], *MONO_RANGE["horns"], lambda f: None, gate=0.2)
     line = untangle.clean_line(line, parts["horns"], sr, np.zeros((0, 2)))
-    # 2. The piano twice: from the piano part alone, and from both parts with the horn
-    #    line filtered out (Demucs files many voicings under "other", and a loud horn
-    #    hides quiet comping from the model). The two are combined.
-    bed = d / "stems" / "piano-bed.wav"
-    sf.write(str(bed), (parts["piano"] + untangle.without_horns(parts["horns"], sr, line)).T, sr)
-    outputs = {
-        "model-piano.npz": transcribe.model_output(bed, dev, job.stage("Transcribing piano", lo + step, lo + 2 * step)),
-        "model-piano-part.npz": transcribe.model_output(paths["piano"], dev, job.stage("Transcribing piano", lo + 2 * step, lo + 3 * step)),
-    }
-    bed.unlink()
-    for name, output in outputs.items():
-        transcribe.save_output(output, d / name)
-    sensitivity = SENSITIVITY["piano"]
-    piano_notes, pedals = _piano_notes(list(outputs.values()), sensitivity)
+    if ymt3 is not None:
+        # 2a. The add-on, trained on band recordings, already heard the piano in the mix.
+        piano = _ymt3_track(ymt3)
+        piano_notes, pedals = ymt3, []
+    else:
+        # 2b. The solo-piano model, on piano and horn parts with the horn line filtered out
+        #     (Demucs files many voicings under "other", and a loud horn hides quiet comping).
+        bed = d / "stems" / "piano-bed.wav"
+        sf.write(str(bed), (parts["piano"] + untangle.without_horns(parts["horns"], sr, line)).T, sr)
+        output = transcribe.model_output(bed, dev, job.stage("Transcribing piano", lo + step, lo + 3 * step))
+        bed.unlink()
+        transcribe.save_output(output, d / "model-piano.npz")
+        sensitivity = SENSITIVITY["piano"]
+        piano_notes, pedals = transcribe.notes_from_output(output, sensitivity)
+        piano = {"id": "piano", "name": instruments.NAMES["piano"], "voice": "piano", "pedals": pedals,
+                 "sensitivity": sensitivity}
     onsets = np.array([[n[0], n[2]] for n in piano_notes]) if piano_notes else np.zeros((0, 2))
     # 3. Piano doubling a horn is the horn; then move the piano's harmonics out of the
     #    horn audio and hear the horns again.
     job.stage("Untangling piano and horns", lo + 3 * step, lo + 3.5 * step)
     line = untangle.clean_line(line, parts["horns"], sr, onsets)
     piano_notes = untangle.drop_doubled(piano_notes, line)
+    piano["notes"] = piano_notes
     piano_audio, horn_audio = untangle.separate(parts["piano"], parts["horns"], sr, piano_notes, line, pedals)
     for family, y in (("piano", piano_audio), ("horns", horn_audio)):
         parts[family] = y
@@ -352,8 +374,6 @@ def _untangle(job: Job, parts: dict, paths: dict, sr: int, lo: float, hi: float)
     report = job.stage("Transcribing horns", lo + 3.5 * step, hi)
     line = transcribe.monophonic(paths["horns"], *MONO_RANGE["horns"], report, gate=0.2)
     line = untangle.clean_line(line, horn_audio, sr, onsets)
-    piano = {"id": "piano", "name": instruments.NAMES["piano"], "voice": "piano", "notes": piano_notes,
-             "pedals": pedals, "sensitivity": sensitivity}
     return {"piano": piano, "horns": line}
 
 
@@ -432,12 +452,14 @@ def _write_result(job: Job, tracks: list[dict], duration: float, lineup: dict | 
         first = notation.seconds_to_beats([min(n[0] for n in pitched)], beats)[0]
         # (+0.25: a note played a touch early still belongs to the next bar.)
         beats = beats[int((first + 0.25) // meter.beats_per_bar) * meter.beats_per_bar :]
+    chord_list = chords.detect(tracks, beats, meter.beats_per_bar)
     for t in tracks:
         t["sheet"] = None
         if t["notes"] and t["id"] != "drums":
             fname = f"sheet-{t['id']}.musicxml"
             notation.write_musicxml(
-                t["notes"], beats, meter, bpm, rec["title"], t["name"], d / fname, grand_staff=t["id"] == "piano"
+                t["notes"], beats, meter, bpm, rec["title"], t["name"], d / fname, grand_staff=t["id"] == "piano",
+                chords=chord_list,
             )
             t["sheet"] = fname
     notation.write_midi([t for t in tracks if t["notes"]], bpm, meter, d / "transcription.mid")
@@ -457,6 +479,7 @@ def _write_result(job: Job, tracks: list[dict], duration: float, lineup: dict | 
         "audio": f"audio{audio.BROWSER_EXT}",
         "midi": "transcription.mid",
         "tracks": tracks,
+        "chords": chord_list,
         "lineup": lineup,
         "version": int(time.time()),
     }

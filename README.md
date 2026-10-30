@@ -14,6 +14,8 @@ Everything runs on your own computer. Notewright uses no accounts, no cloud serv
 - **Speed** from 25% to 150% without changing pitch, plus A–B looping for practice.
 - **Play along**: mute your instrument and keep either the real band (the separated recording) or the transcribed band. A song transcribed in piano mode can be separated later with one click, without downloading it again.
 - **More or fewer notes**: if quiet notes are missing, such as comping chords under a solo, move the slider above the sheet music. Notewright then reads that part again from the saved model output, which takes seconds.
+- **Chords** named from the transcription, shown in the piano roll and above the sheet music.
+- **Full screen** (press F): just the sheet or the piano roll, with a player bar that fades while you play.
 - **Export** to MusicXML (opens in MuseScore, Sibelius, Finale or Dorico) and to MIDI.
 
 ## Install
@@ -58,6 +60,23 @@ Transcriptions are kept in `data/` next to the code. Set `NOTEWRIGHT_DATA` to ke
 ### Speed
 
 On a recent laptop CPU, piano mode takes about as long as the song itself, and full band mode takes a few times longer. With an NVIDIA GPU, PyTorch uses CUDA automatically. To try Apple Silicon acceleration, run `NOTEWRIGHT_DEVICE=mps python -m notewright`.
+
+### Better piano in band recordings (optional add-on)
+
+The built-in piano model was trained on solo concert piano, and it misses and invents notes when a band plays around the piano. The optional [YourMT3+](https://github.com/mimbres/YourMT3) add-on was trained on band recordings. On a test ballad with known notes (piano comping under a tenor sax melody, with bass), the full-band piano part improves like this:
+
+| | Correct notes | Notes found |
+| --- | --- | --- |
+| Built-in piano model | 56% | 83% |
+| With the YourMT3+ add-on | 81% | 88% |
+
+Saxophone, bass and drums stay with Notewright's own pipeline, which did better on them. To install the add-on (Python 3.12 needed; on a Mac `brew install python@3.12`):
+
+```bash
+addons/yourmt3/install.sh
+```
+
+It adds about 3 GB and roughly 1.5 times the song's length to each full-band transcription. It is downloaded from its authors and runs as a separate program; see [addons/yourmt3/README.md](addons/yourmt3/README.md) for its licence.
 
 ## How it works
 

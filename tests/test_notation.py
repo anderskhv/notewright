@@ -88,3 +88,14 @@ def test_ballad_slowing_down_gets_no_invented_beats():
     assert len(_fill_gaps(beats)) == len(beats)
     gapped = np.delete(beats, 20)  # one beat really missing
     assert len(_fill_gaps(gapped)) == len(beats)
+
+
+def test_chord_symbols_are_written(tmp_path):
+    beats = grid(40)
+    notes = [[0, 1.0, 60, 80], [0, 1.0, 64, 80], [1.0, 2.0, 62, 80], [1.0, 2.0, 65, 80]]
+    path = tmp_path / "c.musicxml"
+    notation.write_musicxml(notes, beats, Meter(4, False), 100, "T", "Piano", path, grand_staff=True,
+                            chords=[[0.0, 0.5, "C"], [0.5, 1.0, "Dm7"], [1.0, 1.5, "B♭maj7"], [1.5, 2.0, "Bm7♭5"]])
+    xml = path.read_text()
+    assert xml.count("<harmony") == 4
+    assert "<root-alter>-1</root-alter>" in xml and "half-diminished" in xml

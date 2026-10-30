@@ -15,7 +15,8 @@ export class PianoRoll {
     new ResizeObserver(() => this._resize()).observe(canvas);
   }
 
-  setData(tracks, beats, beatsPerBar) {
+  setData(tracks, beats, beatsPerBar, chords = []) {
+    this.chords = chords;
     this.tracks = tracks.filter((t) => t.notes.length && t.id !== "drums");
     let lo = 127, hi = 0;
     for (const t of this.tracks) {
@@ -98,6 +99,29 @@ export class PianoRoll {
         const height = Math.max(3, Math.min(fall, y1) - top);
         roundRect(ctx, k.x + 1, top, k.w - 2, height, Math.min(4, k.w / 3));
       }
+    }
+
+    // Chords: upcoming ones fall along the right edge, the current one sits top left.
+    let now = null;
+    ctx.textAlign = "right";
+    ctx.font = "600 15px system-ui, sans-serif";
+    for (const [start, end, name] of this.chords || []) {
+      if (start <= t && t < end) now = name;
+      if (start <= t || start > windowEnd) continue;
+      const y = Math.round(fall - (start - t) * this.pps) + 0.5;
+      ctx.strokeStyle = css.getPropertyValue("--roll-chord-line");
+      ctx.beginPath(); ctx.moveTo(w - 70, y); ctx.lineTo(w, y); ctx.stroke();
+      ctx.fillStyle = css.getPropertyValue("--roll-chord");
+      ctx.fillText(name, w - 8, y - 5);
+    }
+    ctx.textAlign = "start";
+    if (now) {
+      ctx.font = "600 26px system-ui, sans-serif";
+      const pad = 10, width = ctx.measureText(now).width + pad * 2;
+      ctx.fillStyle = css.getPropertyValue("--roll-chord-bg");
+      roundRect(ctx, 12, 12, width, 42, 8);
+      ctx.fillStyle = css.getPropertyValue("--roll-chord-now");
+      ctx.fillText(now, 12 + pad, 43);
     }
 
     // Keyboard.

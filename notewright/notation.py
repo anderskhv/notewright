@@ -262,7 +262,22 @@ def _fill_part(part, events, end: Fraction, meter: Meter, clef, flats: bool) -> 
         place(cursor, end - cursor, None)
 
 
-def write_musicxml(notes, beats, meter: Meter, bpm, title, instrument, path: Path, grand_staff: bool) -> None:
+_KINDS = {
+    "": "major", "m": "minor", "7": "dominant-seventh", "maj7": "major-seventh", "m7": "minor-seventh",
+    "m7♭5": "half-diminished-seventh", "°7": "diminished-seventh", "6": "major-sixth", "m6": "minor-sixth",
+    "sus4": "suspended-fourth", "7sus4": "suspended-fourth-seventh", "+": "augmented", "°": "diminished",
+}
+
+
+def _chord_symbol(name: str):
+    from music21 import harmony
+
+    root = name[:2] if len(name) > 1 and name[1] == "♭" else name[:1]
+    return harmony.ChordSymbol(root=root.replace("♭", "-"), kind=_KINDS[name[len(root):]])
+
+
+def write_musicxml(notes, beats, meter: Meter, bpm, title, instrument, path: Path, grand_staff: bool,
+                   chords: list | None = None) -> None:
     from music21 import clef, instrument as m21inst, key, layout, metadata, note, stream, tempo
 
     q = quantise(notes, beats, meter)
@@ -304,6 +319,13 @@ def write_musicxml(notes, beats, meter: Meter, bpm, title, instrument, path: Pat
     for p in parts:
         p.insert(0, key.KeySignature(sharps))
 
+    for start, _, name in chords or []:
+        offset = Fraction(round(float(seconds_to_beats([start], beats)[0]))) * meter.beat_ql
+        if 0 <= offset < end:
+            try:
+                parts[0].insert(offset, _chord_symbol(name))
+            except Exception:  # noqa: BLE001 - a symbol music21 cannot spell is left out
+                pass
     for p in parts:
         score.insert(0, p)
     if grand_staff:
