@@ -101,4 +101,4 @@ The web player is plain JavaScript modules in `web/`, with no build step. `windo
 
 ## License
 
-MIT. Libraries and models keep their own licenses, listed above and in `web/vendor/README.md`.
+MIT. Libraries and models keep their own licenses, listed above and in `web/vendor/README.md`. `notewright/audioset_labels.csv` is Google's AudioSet label list (CC BY 4.0).

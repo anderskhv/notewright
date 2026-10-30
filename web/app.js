@@ -204,7 +204,8 @@ function showLineup(result) {
     else if (f === "bass") names.push(l.bassKind === "double" ? "Double bass" : "Bass");
     else names.push(LINEUP_NAMES[f]);
   }
-  $("lineup-text").textContent = names.join(" · ") + (l.detected ? " (detected)" : "");
+  const note = { detected: " (detected)", loudness: " (guessed from loudness: please check)" }[l.source] || (l.detected ? " (detected)" : "");
+  $("lineup-text").textContent = names.join(" · ") + note;
   for (const box of $("lineup-form").querySelectorAll("input[type=checkbox]")) {
     box.checked = HORN_KINDS.includes(box.value) ? l.horns.includes(box.value) : l.families.includes(box.value);
   }

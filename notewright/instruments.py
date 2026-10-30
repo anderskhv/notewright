@@ -22,7 +22,6 @@ import numpy as np
 from .config import MODEL_DIR
 
 SED_URL = "https://zenodo.org/record/3987831/files/Cnn14_DecisionLevelMax_mAP%3D0.385.pth?download=1"
-LABELS_URL = "http://storage.googleapis.com/us_audioset/youtube_corpus/v1/csv/class_labels_indices.csv"
 
 # Instruments a line-up can hold, in display order. "horns" have kinds (below).
 FAMILIES = ["piano", "horns", "guitar", "vocals", "bass", "drums", "other"]
@@ -51,13 +50,25 @@ _LABELS = {
 _sed = None
 
 
+# AudioSet's label list (CC BY 4.0), shipped with Notewright. panns_inference reads
+# it from ~/panns_data on import and would otherwise try to fetch it with wget.
+LABELS_CSV = Path(__file__).with_name("audioset_labels.csv")
+
+
+def _labels() -> list[str]:
+    import csv
+
+    with open(LABELS_CSV, newline="") as f:
+        return [row[2] for row in list(csv.reader(f))[1:]]
+
+
 def _labels_file() -> None:
-    # panns_inference reads this file on import and fetches it with wget if missing,
-    # which macOS does not have; put it in place first.
+    import shutil
+
     path = Path.home() / "panns_data" / "class_labels_indices.csv"
-    if not path.exists():
+    if not path.exists() or path.stat().st_size < 10_000:
         path.parent.mkdir(parents=True, exist_ok=True)
-        urllib.request.urlretrieve(LABELS_URL, path)
+        shutil.copyfile(LABELS_CSV, path)
 
 
 def _model(device: str):
@@ -85,9 +96,9 @@ def _model(device: str):
 def listen(y32k: np.ndarray, device: str) -> dict[str, np.ndarray]:
     """Per-frame (100 per second) probability for each label group in _LABELS."""
     import torch
-    from panns_inference import labels
 
     net = _model(device)
+    labels = _labels()
     peak = np.abs(y32k).max() or 1.0
     x = torch.tensor((y32k / peak * 0.9)[None, :], dtype=torch.float32, device=next(net.parameters()).device)
     with torch.no_grad():
@@ -143,6 +154,15 @@ def detect(mix: Path, stems: dict[str, Path], device: str) -> dict:
         "horns": horns,
         "bassKind": "double" if double >= p90(heard["bass"]["bass_guitar"]) else "electric",
     }
+
+
+def lineup_by_level(mix: Path, stems: dict[str, Path]) -> dict:
+    """Fallback line-up from stem loudness alone, if the recogniser cannot run."""
+    mix_rms = _rms(_load32(mix)) or 1.0
+    level = {name: _rms(_load32(path)) / mix_rms for name, path in stems.items()}
+    families = [f for f, need in (("piano", 0.15), ("guitar", 0.25), ("vocals", 0.25), ("bass", 0.02),
+                                  ("drums", 0.05), ("other", 0.2)) if level.get(f, 0) >= need]
+    return {"families": families or ["other"], "horns": [], "bassKind": "electric"}
 
 
 def normalise_lineup(lineup: dict) -> dict:

@@ -213,8 +213,13 @@ def run(job: Job) -> None:
         for name, path in stems.items():
             audio.to_browser(path, raw / f"{name}{audio.BROWSER_EXT}")
         job.stage("Recognising instruments", 0.4, 0.45)
-        lineup = instruments.normalise_lineup(instruments.detect(wav, stems, dev))
-        lineup["detected"] = True
+        try:
+            lineup = instruments.normalise_lineup(instruments.detect(wav, stems, dev))
+            lineup["source"] = "detected"
+        except Exception:  # noqa: BLE001 - recognition is a suggestion; never lose the song over it
+            traceback.print_exc()
+            lineup = instruments.normalise_lineup(instruments.lineup_by_level(wav, stems))
+            lineup["source"] = "loudness"
         tracks = _band(job, {n: _read(p) for n, p in stems.items()}, lineup, 0.45)
         extra["lineup"] = lineup
     else:
