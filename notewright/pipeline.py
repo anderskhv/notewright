@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-from . import audio, instruments, notation, transcribe
+from . import audio, instruments, notation, transcribe, untangle
 from .config import DATA_DIR, device
 
 # Per family: transcriber and sampler voice in the browser. Horns get one track per horn.
@@ -277,14 +277,25 @@ def _band(job: Job, stems: dict[str, tuple[np.ndarray, int]], lineup: dict, star
     tracks = []
     families = lineup["families"]
     span = (0.95 - start - 0.05) / max(1, len(families))
+    piano_done = None
+    if "piano" in families and "horns" in families:
+        lo = start + 0.05
+        piano_done = _untangle(job, parts, paths, sr, lo, lo + 2 * span)
     for i, family in enumerate(families):
         kind, voice = FAMILY_TRACKS[family]
         lo = start + 0.05 + i * span
         report = job.stage(f"Transcribing {instruments.NAMES.get(family, family).split(' ')[0].lower()}", lo, lo + span)
         stem = {"stem": f"stems/{family}{audio.BROWSER_EXT}", "stemId": family}
+        if family == "piano" and piano_done:
+            tracks.append({**piano_done["piano"], **stem})
+            continue
         if family == "horns":
-            # Gate: in another instrument's solo the horn part holds only leakage.
-            line = transcribe.monophonic(paths[family], *MONO_RANGE["horns"], report, gate=0.2)
+            if piano_done:
+                line = piano_done["horns"]
+            else:
+                # Gate: in another instrument's solo the horn part holds only leakage.
+                line = transcribe.monophonic(paths[family], *MONO_RANGE["horns"], report, gate=0.2)
+                line = untangle.clean_line(line, parts[family], sr, np.zeros((0, 2)))
             split = instruments.split_horns(line, lineup["horns"])
             for horn in lineup["horns"]:
                 notes = split.get(horn, [])
@@ -303,6 +314,38 @@ def _band(job: Job, stems: dict[str, tuple[np.ndarray, int]], lineup: dict, star
     for wav in paths.values():
         wav.unlink(missing_ok=True)
     return tracks
+
+
+def _untangle(job: Job, parts: dict, paths: dict, sr: int, lo: float, hi: float) -> dict:
+    """Piano and horns together: see untangle.py. Rewrites both parts' audio."""
+    d, dev = job.dir, device()
+    mid = (lo + hi) / 2
+    # 1. The piano, heard from both parts: Demucs files many voicings under "other".
+    bed = d / "stems" / "piano-bed.wav"
+    sf.write(str(bed), (parts["piano"] + parts["horns"]).T, sr)
+    output = transcribe.model_output(bed, dev, job.stage("Transcribing piano", lo, mid))
+    bed.unlink()
+    transcribe.save_output(output, d / "model-piano.npz")
+    sensitivity = SENSITIVITY["piano"]
+    piano_notes, pedals = transcribe.notes_from_output(output, sensitivity)
+    onsets = np.array([[n[0], n[2]] for n in piano_notes]) if piano_notes else np.zeros((0, 2))
+    # 2. A first horn line, without the piano notes in it; piano doubling a horn is the horn.
+    job.stage("Untangling piano and horns", mid, mid + (hi - mid) / 2)
+    line = transcribe.monophonic(paths["horns"], *MONO_RANGE["horns"], lambda f: None, gate=0.2)
+    line = untangle.clean_line(line, parts["horns"], sr, onsets)
+    piano_notes = untangle.drop_doubled(piano_notes, line)
+    # 3. Move the piano's harmonics out of the horn audio, then hear the horns again.
+    piano_audio, horn_audio = untangle.separate(parts["piano"], parts["horns"], sr, piano_notes, line, pedals)
+    for family, y in (("piano", piano_audio), ("horns", horn_audio)):
+        parts[family] = y
+        sf.write(str(paths[family]), y.T, sr)
+        audio.to_browser(paths[family], d / "stems" / f"{family}{audio.BROWSER_EXT}")
+    report = job.stage("Transcribing horns", mid + (hi - mid) / 2, hi)
+    line = transcribe.monophonic(paths["horns"], *MONO_RANGE["horns"], report, gate=0.2)
+    line = untangle.clean_line(line, horn_audio, sr, onsets)
+    piano = {"id": "piano", "name": instruments.NAMES["piano"], "voice": "piano", "notes": piano_notes,
+             "pedals": pedals, "sensitivity": sensitivity}
+    return {"piano": piano, "horns": line}
 
 
 def relineup(job: Job, lineup: dict) -> None:
@@ -342,6 +385,9 @@ def retune(job: Job, track_id: str, sensitivity: float) -> None:
         transcribe.save_output(output, raw)
     job.stage("Reading notes", 0.8, 0.95)
     track["notes"], track["pedals"] = transcribe.notes_from_output(transcribe.load_output(raw), sensitivity)
+    horn_notes = [n for t in result["tracks"] if t.get("group") == "Horns" for n in t["notes"]]
+    if track_id == "piano" and horn_notes:
+        track["notes"] = untangle.drop_doubled(track["notes"], horn_notes)
     track["sensitivity"] = sensitivity
     job.stage("Writing sheet music", 0.95, 1.0)
     _write_result(job, result["tracks"], result["duration"], lineup=result.get("lineup"))
