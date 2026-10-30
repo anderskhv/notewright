@@ -90,6 +90,10 @@ export class Player {
     this.duration = 0;
     this.media = new Map(); // stem id -> { el, gain, node }
     this.synths = new Map(); // track id -> { notes, instrument, volume, pointer, ready }
+    // Sampled instruments are slow to load (their samples are decoded on the page), so
+    // they load only when a transcription is turned up, and are kept for the next song.
+    this._instruments = new Map(); // "voice|track id" -> Promise<{ instrument, drumMap }>
+    this._loading = 0;
     this.loop = { a: null, b: null, on: false };
     // Measured media pipeline delay, seconds of real time. It belongs to this browser
     // and computer, so the last measurement is where the next song starts.
@@ -127,7 +131,7 @@ export class Player {
     this.pause();
     this.position = 0;
     for (const m of this.media.values()) { m.el.pause(); m.el.removeAttribute("src"); m.el.load(); m.node.disconnect(); }
-    for (const s of this.synths.values()) s.instrument?.dispose();
+    for (const s of this.synths.values()) s.instrument?.stop();
     this.media.clear();
     this.synths.clear();
     this.duration = result.duration;
@@ -147,24 +151,22 @@ export class Player {
     for (const t of result.tracks) if (t.stem) stems.set(t.stemId || t.id, t.stem);
     for (const [id, src] of stems) this._addMedia(id, base + src, 0);
 
-    let pending = 0;
     for (const track of result.tracks) {
       if (!track.notes.length) continue;
-      const notes = track.notes.map(([start, end, pitch, vel]) => ({ start, end, pitch, vel }));
+      // Velocities come from the recording's level: soft comping would play almost
+      // silently. Scale each part so its typical note plays at a healthy velocity.
+      const vels = track.notes.map((n) => n[3]).sort((a, b) => a - b);
+      const typical = vels[Math.floor(vels.length * 0.75)] || 80;
+      const boost = Math.max(1, Math.min(3, 95 / typical));
+      const notes = track.notes.map(([start, end, pitch, vel]) => (
+        { start, end, pitch, vel: Math.max(30, Math.min(127, Math.round(vel * boost))) }
+      ));
       const sound = track.id === "piano" ? withPedal(notes, track.pedals || []) : notes.map((n) => n.end);
       notes.forEach((n, i) => (n.sound = Math.max(sound[i], n.start + 0.05)));
-      const synth = { notes, volume: 0, pointer: 0, ready: false, instrument: null, voice: track.voice };
+      const synth = { notes, volume: 0, pointer: 0, ready: false, instrument: null, voice: track.voice, key: `${track.voice}|${track.id}` };
       this.synths.set(track.id, synth);
-      pending++;
-      this._makeInstrument(synth).then(() => {
-        synth.ready = true;
-        this.onLoading(--pending);
-      }).catch((err) => {
-        console.error("Could not load sounds for", track.id, err);
-        this.onLoading(--pending);
-      });
     }
-    this.onLoading(pending);
+    this.onLoading(this._loading);
   }
 
   async _attachTap() {
@@ -183,17 +185,38 @@ export class Player {
     }
   }
 
-  async _makeInstrument(synth) {
+  _ensureInstrument(synth) {
+    if (synth.instrument || synth.loading) return;
+    synth.loading = true;
+    if (!this._instruments.has(synth.key)) this._instruments.set(synth.key, this._makeInstrument(synth.voice));
+    this.onLoading(++this._loading);
+    this._instruments.get(synth.key).then(({ instrument, drumMap }) => {
+      synth.instrument = instrument;
+      synth.drumMap = drumMap;
+      synth.ready = true;
+      this._applyVolume(synth);
+    }).catch((err) => {
+      console.error("Could not load sounds for", synth.key, err);
+      this._instruments.delete(synth.key);
+    }).finally(() => {
+      synth.loading = false;
+      this.onLoading(--this._loading);
+    });
+  }
+
+  async _makeInstrument(voice) {
     const ctx = this.ctx;
-    if (synth.voice === "piano") synth.instrument = SplendidGrandPiano(ctx);
-    else if (synth.voice === "drums") synth.instrument = DrumMachine(ctx, { instrument: "TR-808" });
-    else synth.instrument = Soundfont(ctx, { instrument: synth.voice });
-    await synth.instrument.ready;
-    if (synth.voice === "drums") {
-      const groups = synth.instrument.getGroupNames();
-      synth.drumMap = { 36: drumName(groups, 36), 38: drumName(groups, 38), 42: drumName(groups, 42) };
+    let instrument;
+    if (voice === "piano") instrument = SplendidGrandPiano(ctx);
+    else if (voice === "drums") instrument = DrumMachine(ctx, { instrument: "TR-808" });
+    else instrument = Soundfont(ctx, { instrument: voice });
+    await instrument.ready;
+    let drumMap = null;
+    if (voice === "drums") {
+      const groups = instrument.getGroupNames();
+      drumMap = { 36: drumName(groups, 36), 38: drumName(groups, 38), 42: drumName(groups, 42) };
     }
-    this._applyVolume(synth);
+    return { instrument, drumMap };
   }
 
   _addMedia(id, src, volume) {
@@ -221,6 +244,7 @@ export class Player {
     const s = this.synths.get(id);
     if (!s) return;
     s.volume = v;
+    if (v > 0) this._ensureInstrument(s);
     this._applyVolume(s);
     if (v === 0) s.instrument?.stop();
   }

@@ -48,6 +48,10 @@ def _fractions(notes, beats) -> np.ndarray:
 
 
 def detect_meter(notes, beats: list[float], beats_per_bar: int, compound: bool = False, bpm: float = 100) -> Meter:
+    # A slow tune counted in two is a ballad in four whose downbeats were found every
+    # other bar line: real 2/4 at under 90 bpm is rare.
+    if beats_per_bar == 2 and not compound and bpm < 90:
+        beats_per_bar = 4
     meter = _meter(notes, beats, beats_per_bar, compound)
     # Fast tunes read better in eighths: sixteenths at 200 bpm are mostly jitter.
     if not meter.compound and (bpm >= 200 or (meter.swing and bpm >= 130)):

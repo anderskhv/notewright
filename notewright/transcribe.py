@@ -52,12 +52,35 @@ def sensitivity_thresholds(sensitivity: float) -> tuple[float, float]:
     return 0.5 - 0.4 * s, 0.18 - 0.16 * s
 
 
+EVEN_OUT = True
+
+
+def even_out(y: np.ndarray, sr: int, max_gain: float = 6.0) -> np.ndarray:
+    """Raise quiet passages towards the level of the loud ones (slow, ~2 s, up to +15 dB).
+
+    The piano model was trained on concert recordings at healthy levels; soft comping
+    in a band recording falls under its thresholds. Only the model's input is changed.
+    """
+    hop = sr // 10
+    frames = len(y) // hop
+    if frames < 10:
+        return y
+    rms = np.sqrt((y[: frames * hop].reshape(frames, hop) ** 2).mean(axis=1)) + 1e-6
+    smooth = np.convolve(rms, np.ones(20) / 20, mode="same")  # two seconds
+    target = np.percentile(smooth, 90)
+    gain = np.clip(target / smooth, 1.0, max_gain)
+    gain = np.interp(np.arange(len(y)), np.arange(frames) * hop + hop / 2, gain)
+    return (y * gain).astype(np.float32)
+
+
 def model_output(path: Path, device: str, progress: Progress) -> dict[str, np.ndarray]:
     """Run the piano model; returns its per-frame probabilities for every key."""
     import torch
 
     model = _load_piano_model(device)
     audio, _ = librosa.load(str(path), sr=16000, mono=True)
+    if EVEN_OUT:
+        audio = even_out(audio, 16000)
     seg = model.segment_samples
     audio_len = len(audio)
     padded = np.concatenate([audio, np.zeros(int(np.ceil(audio_len / seg)) * seg - audio_len)])[None, :]
