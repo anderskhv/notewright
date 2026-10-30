@@ -1,6 +1,36 @@
 // Playback engine: the original recording, separated stems and sampled instruments
 // playing the transcription, all locked to one clock and one playback speed.
-import { DrumMachine, Soundfont, SplendidGrandPiano } from "./vendor/smplr.mjs";
+import { Reverb, Smolken, Soundfont, SplendidGrandPiano, Versilian } from "./vendor/smplr.mjs";
+
+// Recorded instruments where a good free one exists; General MIDI soundfonts otherwise.
+// VCSL is the Versilian Community Sample Library (CC0).
+const VCSL = {
+  tenor_sax: "Aerophones/Reed Aerophones/Tenor Saxophone - Vibrato",
+  kick: "Membranophones/Struck Membranophones/Bass Drum 1",
+  snare: "Membranophones/Struck Membranophones/Snare Drum, Modern 1",
+  hihat: "Idiophones/Struck Idiophones/Hi-Hat Cymbal",
+  ride: "Idiophones/Struck Idiophones/Suspended Cymbal 1",
+};
+// Reverb send per voice: a small room puts the parts in one space.
+const ROOM = { piano: 0.18, tenor_sax: 0.3, alto_sax: 0.3, trumpet: 0.3, acoustic_bass: 0.08, drums: 0.12 };
+
+// A drum kit from single recorded drums, played by General MIDI drum numbers.
+class DrumKit {
+  constructor(ctx, jazz) {
+    const make = (name) => Versilian(ctx, { instrument: VCSL[name] });
+    this.parts = { kick: make("kick"), snare: make("snare"), cymbal: make(jazz ? "ride" : "hihat") };
+    this.keys = { kick: 60, snare: 60, cymbal: jazz ? 70 : 42 }; // keys in each sample map (stick ride: 70)
+    this.ready = Promise.all(Object.values(this.parts).map((p) => p.ready));
+    const parts = Object.values(this.parts);
+    this.output = { set volume(v) { for (const p of parts) p.output.volume = v; }, addEffect: (...a) => parts.forEach((p) => p.output.addEffect(...a)) };
+  }
+  start({ note, time, velocity }) {
+    const part = note === 36 ? "kick" : note === 38 ? "snare" : "cymbal";
+    this.parts[part].start({ note: this.keys[part], time, velocity });
+  }
+  stop() { for (const p of Object.values(this.parts)) p.stop(); }
+  dispose() { for (const p of Object.values(this.parts)) p.dispose(); }
+}
 
 // Sync model.
 // - The full recording is the master: the clock follows the element's reported
@@ -65,15 +95,6 @@ function withPedal(notes, pedals) {
   return sound;
 }
 
-function drumName(groups, gm) {
-  const want = { 36: ["kick", "bd", "bass"], 38: ["snare", "sd", "clap"], 42: ["hihat", "hh", "closed", "hat"] }[gm] || ["kick"];
-  for (const w of want) {
-    const hit = groups.find((g) => g.toLowerCase().includes(w));
-    if (hit) return hit;
-  }
-  return groups[0];
-}
-
 // Rise in loudness per frame: onsets, which line up sharply.
 function onsets(log) {
   const out = new Float32Array(log.length);
@@ -92,7 +113,7 @@ export class Player {
     this.synths = new Map(); // track id -> { notes, instrument, volume, pointer, ready }
     // Sampled instruments are slow to load (their samples are decoded on the page), so
     // they load only when a transcription is turned up, and are kept for the next song.
-    this._instruments = new Map(); // "voice|track id" -> Promise<{ instrument, drumMap }>
+    this._instruments = new Map(); // "voice|track id|jazz" -> Promise<{ instrument, oneShot }>
     this._loading = 0;
     this.loop = { a: null, b: null, on: false };
     // Measured media pipeline delay, seconds of real time. It belongs to this browser
@@ -136,6 +157,9 @@ export class Player {
     this.synths.clear();
     this.duration = result.duration;
     this.loop = { a: null, b: null, on: false };
+    // Jazz (horns or a double bass in the line-up) gets a ride cymbal instead of a hi-hat.
+    const l = result.lineup;
+    this.jazz = !!(l && (l.bassKind === "double" || (l.horns && l.horns.length)));
     this.reference = null;
     this._history = [];
     this.sync = { measured: false, confidence: 0 };
@@ -163,7 +187,7 @@ export class Player {
       ));
       const sound = track.id === "piano" ? withPedal(notes, track.pedals || []) : notes.map((n) => n.end);
       notes.forEach((n, i) => (n.sound = Math.max(sound[i], n.start + 0.05)));
-      const synth = { notes, volume: 0, pointer: 0, ready: false, instrument: null, voice: track.voice, key: `${track.voice}|${track.id}` };
+      const synth = { notes, volume: 0, pointer: 0, ready: false, instrument: null, voice: track.voice, key: `${track.voice}|${track.id}|${this.jazz}` };
       this.synths.set(track.id, synth);
     }
     this.onLoading(this._loading);
@@ -188,11 +212,11 @@ export class Player {
   _ensureInstrument(synth) {
     if (synth.instrument || synth.loading) return;
     synth.loading = true;
-    if (!this._instruments.has(synth.key)) this._instruments.set(synth.key, this._makeInstrument(synth.voice));
+    if (!this._instruments.has(synth.key)) this._instruments.set(synth.key, this._makeInstrument(synth.voice, this.jazz));
     this.onLoading(++this._loading);
-    this._instruments.get(synth.key).then(({ instrument, drumMap }) => {
+    this._instruments.get(synth.key).then(({ instrument, oneShot }) => {
       synth.instrument = instrument;
-      synth.drumMap = drumMap;
+      synth.oneShot = oneShot;
       synth.ready = true;
       this._applyVolume(synth);
     }).catch((err) => {
@@ -204,19 +228,32 @@ export class Player {
     });
   }
 
-  async _makeInstrument(voice) {
+  async _makeInstrument(voice, jazz) {
     const ctx = this.ctx;
-    let instrument;
-    if (voice === "piano") instrument = SplendidGrandPiano(ctx);
-    else if (voice === "drums") instrument = DrumMachine(ctx, { instrument: "TR-808" });
-    else instrument = Soundfont(ctx, { instrument: voice });
-    await instrument.ready;
-    let drumMap = null;
-    if (voice === "drums") {
-      const groups = instrument.getGroupNames();
-      drumMap = { 36: drumName(groups, 36), 38: drumName(groups, 38), 42: drumName(groups, 42) };
+    const make = () => {
+      if (voice === "piano") return SplendidGrandPiano(ctx);
+      if (voice === "drums") return new DrumKit(ctx, jazz);
+      if (voice === "acoustic_bass") return Smolken(ctx, { instrument: "Pizzicato" });
+      if (VCSL[voice]) return Versilian(ctx, { instrument: VCSL[voice] });
+      return Soundfont(ctx, { instrument: voice });
+    };
+    let instrument = make();
+    try {
+      await instrument.ready;
+    } catch (err) {
+      // A recorded instrument that fails to load falls back to its soundfont.
+      if (voice === "piano" || voice === "drums") throw err;
+      console.warn("Falling back to the soundfont for", voice, err);
+      instrument = Soundfont(ctx, { instrument: voice });
+      await instrument.ready;
     }
-    return { instrument, drumMap };
+    try {
+      this.reverb ||= Reverb(ctx);
+      instrument.output.addEffect("room", this.reverb, ROOM[voice] ?? 0.2);
+    } catch (err) {
+      console.warn("No reverb:", err);
+    }
+    return { instrument, oneShot: voice === "drums" };
   }
 
   _addMedia(id, src, volume) {
@@ -330,12 +367,11 @@ export class Player {
         const n = notes[s.pointer++];
         if (!s.ready || s.volume === 0 || n.start < this.time - 0.05) continue;
         const when = this.anchorCtx + (n.start - this.anchorSong) / this.rate;
-        const note = s.drumMap ? s.drumMap[n.pitch] || s.drumMap[36] : n.pitch;
         s.instrument.start({
-          note,
+          note: n.pitch,
           velocity: n.vel,
           time: Math.max(when, now),
-          duration: s.drumMap ? undefined : (n.sound - n.start) / this.rate,
+          duration: s.oneShot ? undefined : (n.sound - n.start) / this.rate,
         });
       }
     }

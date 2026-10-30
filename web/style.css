@@ -7,15 +7,16 @@
   --accent: #3f6fe0;
   --accent-ink: #ffffff;
   --error: #c4352b;
-  --roll-bg: #17181c;
-  --roll-lane: #1d1f24;
-  --roll-bar: #2c2f36;
+  --roll-bg: #07070a;
+  --roll-lane: #0d0d11;
+  --roll-guide: #17171d;
+  --roll-bar: #1f1f27;
   --roll-text: #5c606b;
   --roll-chord: #c9ccd6;
   --roll-chord-line: #4a4f5c;
   --roll-chord-bg: rgba(255, 255, 255, 0.1);
   --roll-chord-now: #ffffff;
-  --roll-edge: #3f6fe0;
+  --roll-edge: #6f8ff5;
   --radius: 10px;
   color-scheme: light;
 }
@@ -187,10 +188,10 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
 .lineup-form button { align-self: flex-start; }
 .lineup-form > button + button { margin-top: -4px; }
 
-/* Full screen: just the music, with a floating player bar that fades while playing. */
+/* Full screen: just the music, with the player bar docked below it. */
 .focus-only { display: none; }
 body.focus .top, body.focus .library, body.focus .song-head, body.focus .mixer { display: none; }
-body.focus .stage { padding: 10px; }
+body.focus .stage { padding: 10px 10px 92px; }
 body.focus .focus-only { display: inline-block; }
 body.focus .transport {
   position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%);
@@ -199,5 +200,8 @@ body.focus .transport {
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
   transition: opacity 0.3s;
 }
-body.focus.idle .transport { opacity: 0; pointer-events: none; }
-body.focus.idle { cursor: none; }
+body.focus { background: #000; }
+body.focus .roll-pane { border-radius: 0; }
+body.focus .transport { background: #151519; color: #e8e8ec; border-color: #26262c; }
+body.focus .transport button:not(.play) { background: #1f1f25; color: #e8e8ec; border-color: #33333b; }
+body.focus .transport .time, body.focus .speed label { color: #a5a5ad; }

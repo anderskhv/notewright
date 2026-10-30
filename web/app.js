@@ -463,26 +463,16 @@ $("roll").addEventListener("wheel", (e) => {
 
 // ---------- Full screen ----------
 
-let idleTimer = null;
-function poke() {
-  document.body.classList.remove("idle");
-  clearTimeout(idleTimer);
-  if (document.body.classList.contains("focus")) {
-    idleTimer = setTimeout(() => { if (player.playing) document.body.classList.add("idle"); }, 2500);
-  }
-}
 function setFocus(on) {
   document.body.classList.toggle("focus", on);
   if (on && !document.fullscreenElement) document.documentElement.requestFullscreen?.().catch(() => {});
   if (!on && document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
-  poke();
 }
 $("focus").onclick = () => setFocus(true);
 $("focus-exit").onclick = () => setFocus(false);
 document.addEventListener("fullscreenchange", () => {
   if (!document.fullscreenElement) setFocus(false);
 });
-for (const ev of ["mousemove", "touchstart", "keydown"]) document.addEventListener(ev, poke, { passive: true });
 
 document.addEventListener("keydown", (e) => {
   if (!current?.result || e.target.matches("input[type=url], input[type=text], select")) return;
