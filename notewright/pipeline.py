@@ -269,6 +269,7 @@ def _band(job: Job, stems: dict[str, tuple[np.ndarray, int]], lineup: dict, star
     parts = instruments.arrange({n: y for n, (y, _) in stems.items()}, sr, lineup)
     for old in (d / "stems").glob(f"*{audio.BROWSER_EXT}"):
         old.unlink()
+    shutil.rmtree(d / "slow", ignore_errors=True)  # slowed copies of the old parts
     for f in list(d.glob("model-*.npz")):
         f.unlink()  # parts changed, so saved model output no longer matches
     paths = {}

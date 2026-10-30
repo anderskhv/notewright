@@ -1,5 +1,6 @@
 """HTTP API and static files. Run with `python -m notewright`."""
 
+import json
 import os
 import threading
 import webbrowser
@@ -115,6 +116,30 @@ def envelope(job_id: str):
     if not (d / "result.json").exists():
         raise HTTPException(404)
     return FileResponse(pipeline.envelope(d), media_type="application/json")
+
+
+@app.get("/api/jobs/{job_id}/slow/{part}/{percent}")
+def slowed(job_id: str, part: str, percent: int, prepare: bool = False):
+    """The recording ("original") or a separated part, slowed to percent% in high quality."""
+    from . import slow
+
+    d = pipeline.jobs_dir() / job_id
+    result_path = d / "result.json"
+    if not result_path.exists() or not 20 <= percent <= 95:
+        raise HTTPException(404)
+    result = json.loads(result_path.read_text())
+    if part == "original":
+        src = d / result["audio"]
+    else:
+        stems = {t.get("stemId", t["id"]): t["stem"] for t in result["tracks"] if t.get("stem")}
+        if part not in stems:
+            raise HTTPException(404)
+        src = d / stems[part]
+    dst = d / "slow" / f"{part}@{percent}{Path(src).suffix}"
+    slow.render(src, percent / 100, dst)
+    if prepare:  # the player asks first, then streams the cached file like any other
+        return {"ready": True}
+    return FileResponse(dst)
 
 
 @app.get("/files/{job_id}/{path:path}")

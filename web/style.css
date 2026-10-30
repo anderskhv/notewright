@@ -156,6 +156,7 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
 .speed { display: flex; align-items: center; gap: 6px; }
 .speed input { width: 110px; accent-color: var(--accent); }
 .speed output { font-variant-numeric: tabular-nums; min-width: 40px; }
+.slow-status { color: var(--muted); font-size: 12px; white-space: nowrap; }
 .loop { display: flex; gap: 4px; }
 .loop button { padding: 5px 9px; }
 .loop button.set { border-color: var(--accent); color: var(--accent); }

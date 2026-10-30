@@ -153,6 +153,8 @@ function openSong(result, base) {
 
   player.load(result, base, `/api/jobs/${result.id}/envelope`);
   player.setRate($("speed").value / 100);
+  $("slow-status").textContent = "";
+  if ($("speed").value < 95) player.prepareSlow();
 
   const tracks = result.tracks.map((t) => ({
     ...t,
@@ -398,6 +400,10 @@ player.onLoading = (pending) => {
 player.onSync = () => {
   if (!loadingSounds) $("sound-status").textContent = syncText();
 };
+player.onSlow = (state) => {
+  $("slow-status").textContent = state === "preparing" ? "Preparing smoother slow audio…"
+    : state === "ready" ? "Smooth slow audio" : "";
+};
 function syncText() {
   const s = player.sync;
   if (!s.measured) return "";
@@ -419,10 +425,14 @@ $("seek").addEventListener("change", () => {
   player.seek(($("seek").value / 1000) * player.duration);
 });
 
+let slowTimer = null;
 $("speed").addEventListener("input", () => {
   const v = Number($("speed").value);
   $("speed-out").textContent = `${v}%`;
   player.setRate(v / 100);
+  // Render the smooth slow copy only once the slider has come to rest.
+  clearTimeout(slowTimer);
+  slowTimer = setTimeout(() => player.prepareSlow(), 800);
 });
 
 $("loop-a").onclick = () => { player.loop.a = player.heardTime; fixLoop(); };

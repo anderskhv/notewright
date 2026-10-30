@@ -124,6 +124,7 @@ export class Player {
     this.onEnd = () => {};
     this.onLoading = () => {};
     this.onSync = () => {};
+    this.onSlow = () => {};
     this._timer = null;
     this._capture = [];
     this._history = [];
@@ -156,6 +157,8 @@ export class Player {
     this.media.clear();
     this.synths.clear();
     this.duration = result.duration;
+    this.jobId = result.id;
+    this._slowToken = null;
     this.loop = { a: null, b: null, on: false };
     // Jazz (horns or a double bass in the line-up) gets a ride cymbal instead of a hi-hat.
     const l = result.lineup;
@@ -265,7 +268,8 @@ export class Player {
     gain.gain.value = volume;
     const node = this.ctx.createMediaElementSource(el);
     node.connect(gain).connect(this.ctx.destination);
-    this.media.set(id, { el, gain, node });
+    // scale: song seconds per second of this file (1, or the speed of a pre-slowed copy)
+    this.media.set(id, { el, gain, node, scale: 1, src, original: src });
   }
 
   _applyVolume(synth) {
@@ -292,18 +296,18 @@ export class Player {
     const token = (this._starting = {});
     await this.ctx.resume();
     const els = [...this.media.values()].map((m) => m.el);
-    for (const el of els) {
-      el.playbackRate = this.rate;
-      el.currentTime = this.position;
+    for (const m of this.media.values()) {
+      m.el.playbackRate = this._baseRate(m);
+      m.el.currentTime = this.position / m.scale;
     }
     // Start the clock only once the recording is really playing.
     await Promise.all(els.map((el) => el.play().catch(() => {})));
     if (this._starting !== token) return; // paused or seeked meanwhile
     this._starting = null;
-    const master = this.media.get("original").el;
-    this.anchorSong = master.currentTime - this.delay * this.rate;
+    const master = this.media.get("original");
+    this.anchorSong = this._songPos(master) - this.delay * this.rate;
     this.anchorCtx = this.ctx.currentTime;
-    this._lastReport = master.currentTime;
+    this._lastReport = master.el.currentTime;
     this._capture = [];
     for (const s of this.synths.values()) s.pointer = lowerBound(s.notes, this.anchorSong);
     this.playing = true;
@@ -333,15 +337,17 @@ export class Player {
     const starting = !!this._starting;
     this.pause();
     this.position = t;
-    for (const m of this.media.values()) m.el.currentTime = t;
+    for (const m of this.media.values()) m.el.currentTime = t / m.scale;
     if (wasPlaying || starting) this.play();
   }
 
   setRate(rate) {
-    const wasPlaying = this.playing;
+    // Still starting counts as playing: dragging the slider changes speed again before
+    // the previous change has finished restarting playback.
+    const wasPlaying = this.playing || !!this._starting;
     this.pause();
     this.rate = rate;
-    for (const m of this.media.values()) m.el.playbackRate = rate;
+    for (const m of this.media.values()) m.el.playbackRate = this._baseRate(m);
     if (wasPlaying) this.play();
   }
 
@@ -379,26 +385,28 @@ export class Player {
 
   // Keep the clock on the recording, and the stems on the recording.
   _follow() {
-    const master = this.media.get("original").el;
+    const entry = this.media.get("original");
+    const master = entry.el;
     if (master.paused || master.seeking) return;
-    const m = master.currentTime;
-    if (m !== this._lastReport) {
+    const m = this._songPos(entry);
+    if (master.currentTime !== this._lastReport) {
       // A fresh report: the recording is at m now, minus what its pipeline holds back.
-      this._lastReport = m;
+      this._lastReport = master.currentTime;
       const err = m - this.delay * this.rate - this.time;
       if (Math.abs(err) > HARD) this._jump(err);
       else this.anchorSong += err * SLEW;
     }
-    for (const [id, { el }] of this.media) {
+    for (const [id, part] of this.media) {
+      const { el } = part;
       if (id === "original" || el.paused || el.seeking) continue;
-      const diff = el.currentTime - m;
+      const diff = this._songPos(part) - m;
       if (Math.abs(diff) > HARD) {
-        el.currentTime = m;
-        el.playbackRate = this.rate;
+        el.currentTime = m / part.scale;
+        el.playbackRate = this._baseRate(part);
       } else {
         // Pull the stem in by playing it up to 5% faster or slower; inaudible with pitch kept.
         const nudge = Math.abs(diff) > 0.01 ? Math.max(-0.05, Math.min(0.05, -diff * 2)) : 0;
-        el.playbackRate = this.rate * (1 + nudge);
+        el.playbackRate = this._baseRate(part) * (1 + nudge);
       }
     }
   }
@@ -409,6 +417,76 @@ export class Player {
       s.instrument?.stop();
       s.pointer = lowerBound(s.notes, this.time);
     }
+  }
+
+  _songPos(part) {
+    return part.el.currentTime * part.scale;
+  }
+
+  _baseRate(part) {
+    return this.rate / part.scale; // a copy pre-slowed to exactly this speed plays at 1
+  }
+
+  // ---------- High-quality slow motion ----------
+
+  // Below 95% speed, ask the server for copies slowed with Signalsmith Stretch and swap
+  // them in (the recording first, then each part) at the same position. Until they are
+  // ready, and at full speed, the browser's own time-stretch plays the normal files.
+  async prepareSlow() {
+    const token = (this._slowToken = {});
+    const percent = Math.round(this.rate * 100);
+    const parts = [...this.media.keys()];
+    if (percent >= 95) {
+      for (const id of parts) await this._swap(id, this.media.get(id).original, 1);
+      this.onSlow(null);
+      return;
+    }
+    this.onSlow("preparing");
+    const one = async (id) => {
+      const url = `/api/jobs/${this.jobId}/slow/${id}/${percent}`;
+      try {
+        const res = await fetch(url + "?prepare=1");
+        if (!res.ok) throw new Error(res.status);
+      } catch (err) {
+        console.warn("No high-quality slow copy of", id, err);
+        return;
+      }
+      if (this._slowToken === token) await this._swap(id, url, percent / 100);
+    };
+    // The recording first (it is what you hear in most mixes), then the parts two at a time.
+    await one("original");
+    const rest = parts.filter((id) => id !== "original");
+    const lanes = [0, 1].map(async (lane) => {
+      for (let i = lane; i < rest.length; i += 2) if (this._slowToken === token) await one(rest[i]);
+    });
+    await Promise.all(lanes);
+    if (this._slowToken === token) this.onSlow("ready");
+  }
+
+  async _swap(id, src, scale) {
+    const part = this.media.get(id);
+    if (!part || part.src === src) return;
+    const el = new Audio();
+    el.preload = "auto";
+    el.preservesPitch = true;
+    el.src = src;
+    const ok = await new Promise((resolve) => {
+      el.oncanplaythrough = () => resolve(true);
+      el.onerror = () => resolve(false);
+    });
+    if (!ok || this.media.get(id) !== part) return;
+    const node = this.ctx.createMediaElementSource(el);
+    node.connect(part.gain);
+    if (part.tap) node.connect(part.tap);
+    const old = part.el, oldNode = part.node;
+    Object.assign(part, { el, node, scale, src });
+    el.playbackRate = this._baseRate(part);
+    el.currentTime = this.time / scale;
+    if (this.playing) await el.play().catch(() => {});
+    old.pause();
+    oldNode.disconnect();
+    old.removeAttribute("src");
+    old.load();
   }
 
   // ---------- Measuring the real delay ----------
