@@ -493,7 +493,7 @@ $("seek").addEventListener("input", () => {
 });
 $("seek").addEventListener("change", () => {
   dragging = false;
-  player.seek(($("seek").value / 1000) * player.duration);
+  jump(($("seek").value / 1000) * player.duration);
 });
 
 let slowTimer = null;
@@ -533,13 +533,29 @@ function updateLoopButtons() {
   $("loop-a").title = l.a === null ? "Loop start at the current position" : `Loop start: ${fmt(l.a)}`;
   $("loop-b").title = l.b === null ? "Loop end at the current position" : `Loop end: ${fmt(l.b)}`;
   $("loop-toggle").classList.toggle("active", l.on);
+  // While looping the button says so, and clicking it stops.
+  $("loop-toggle").textContent = l.on ? `Looping ${fmt(l.a)}–${fmt(l.b)} ✕` : "Loop";
+  $("loop-toggle").title = l.on ? "Stop looping (Esc)" : "Repeat between A and B";
+}
+
+function stopLoop() {
+  if (!player.loop.on) return;
+  player.loop.on = false;
+  updateLoopButtons();
+}
+
+// Jumping somewhere outside the loop means you are done with it.
+function jump(t) {
+  const l = player.loop;
+  if (l.on && (t < l.a - 0.05 || t > l.b)) stopLoop();
+  player.seek(t);
 }
 
 // Wheel over the piano roll scrubs through the song.
 $("roll").addEventListener("wheel", (e) => {
   if (!current?.result) return;
   e.preventDefault();
-  player.seek(player.time - roll.pxToSeconds(e.deltaY));
+  jump(player.time - roll.pxToSeconds(e.deltaY));
 }, { passive: false });
 
 // ---------- Full screen ----------
@@ -560,8 +576,9 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "f" || e.key === "F") setFocus(!document.body.classList.contains("focus"));
   if (e.key === "Escape" && document.body.classList.contains("focus")) setFocus(false);
   if (e.code === "Space") { e.preventDefault(); player.toggle(); }
-  if (e.code === "ArrowLeft") player.seek(player.time - 5);
-  if (e.code === "ArrowRight") player.seek(player.time + 5);
+  if (e.code === "ArrowLeft") jump(player.time - 5);
+  if (e.code === "ArrowRight") jump(player.time + 5);
+  if (e.key === "Escape") stopLoop();
 });
 
 $("zoom-in").onclick = () => sheet.setZoom(sheet.zoom + 0.1);
