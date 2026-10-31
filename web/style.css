@@ -1,36 +1,24 @@
 :root {
-  --bg: #f6f5f1;
-  --panel: #ffffff;
-  --ink: #1d1d1f;
-  --muted: #6b6b70;
-  --line: #e3e1da;
-  --accent: #3f6fe0;
+  /* Dark by default: the piano roll is black, and the page around it follows. */
+  --bg: #0b0c10;
+  --panel: #13141a;
+  --raised: #1a1c24;
+  --ink: #e8e8ee;
+  --muted: #8d8f9c;
+  --line: #23252e;
+  --accent: #4d5cff;
   --accent-ink: #ffffff;
-  --error: #c4352b;
-  --roll-bg: #07070a;
-  --roll-lane: #0d0d11;
-  --roll-guide: #17171d;
-  --roll-bar: #1f1f27;
-  --roll-text: #5c606b;
+  --error: #ff6b6b;
+  --track: #2a2c36;
+  --roll-bg: #000000;
+  --roll-guide: rgba(255, 255, 255, 0.05);
+  --roll-bar: rgba(255, 255, 255, 0.07);
+  --roll-text: #4c4f5c;
   --roll-chord: #c9ccd6;
-  --roll-chord-line: #4a4f5c;
-  --roll-chord-bg: rgba(255, 255, 255, 0.1);
+  --roll-chord-line: rgba(255, 255, 255, 0.18);
   --roll-chord-now: #ffffff;
-  --roll-edge: #6f8ff5;
   --radius: 10px;
-  color-scheme: light;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #121316;
-    --panel: #1b1c20;
-    --ink: #ececef;
-    --muted: #9a9ba3;
-    --line: #2c2d33;
-    --accent: #6d8ff0;
-    color-scheme: dark;
-  }
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -46,17 +34,27 @@ body {
 button, input, select { font: inherit; color: inherit; }
 button {
   border: 1px solid var(--line);
-  background: var(--panel);
+  background: var(--raised);
   border-radius: 8px;
   padding: 6px 12px;
   cursor: pointer;
 }
-button:hover { border-color: var(--muted); }
+button:hover { border-color: #3a3d4a; }
 button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 button.active { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .hint { color: var(--muted); }
 .error { color: var(--error); }
 [hidden] { display: none !important; }
+select { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
+input[type="range"] {
+  -webkit-appearance: none; appearance: none; height: 4px; border-radius: 2px; background: var(--track); cursor: pointer;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: var(--accent);
+  box-shadow: 0 0 10px rgba(77, 92, 255, 0.6);
+}
+input[type="range"]::-moz-range-thumb { width: 14px; height: 14px; border: none; border-radius: 50%; background: var(--accent); }
+input[type="range"]::-moz-range-progress { height: 4px; border-radius: 2px; background: var(--accent); }
 
 .top {
   display: flex;
@@ -171,7 +169,25 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
 .mixer td { padding: 4px 8px; border-top: 1px solid var(--line); }
 .mixer td:first-child { white-space: nowrap; }
 .mixer input[type="range"] { width: 100%; max-width: 220px; accent-color: var(--accent); }
-.swatch { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 8px; vertical-align: -1px; }
+.swatch {
+  display: inline-block; width: 14px; height: 14px; border-radius: 50%; margin-right: 10px; vertical-align: -2px;
+  border: none; padding: 0; cursor: pointer; box-shadow: 0 0 0 2px var(--panel), 0 0 0 3px rgba(255, 255, 255, 0.12);
+}
+.swatch:hover, .swatch.open { box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--accent); }
+/* The colour picker: five colours, as in Rousseau's videos. */
+.picker {
+  position: absolute; z-index: 20; padding: 12px 14px; border-radius: 14px;
+  background: var(--raised); border: 1px solid #2c2f3a; box-shadow: 0 18px 40px rgba(0, 0, 0, 0.5);
+}
+.picker::before {
+  content: ""; position: absolute; left: 20px; bottom: -7px; width: 12px; height: 12px; background: var(--raised);
+  border-right: 1px solid #2c2f3a; border-bottom: 1px solid #2c2f3a; transform: rotate(45deg);
+}
+.picker .dots { display: flex; gap: 12px; }
+.picker button { all: unset; display: flex; flex-direction: column; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); cursor: pointer; }
+.picker i { width: 30px; height: 30px; border-radius: 50%; box-shadow: 0 0 14px -2px currentColor; }
+.picker button.on { color: var(--ink); }
+.picker button.on i, .picker button:hover i { box-shadow: 0 0 0 2px var(--raised), 0 0 0 4px #fff, 0 0 16px -2px currentColor; }
 .na { color: var(--muted); font-size: 12px; }
 
 @media (max-width: 900px) {
@@ -203,6 +219,3 @@ body.focus .transport {
 }
 body.focus { background: #000; }
 body.focus .roll-pane { border-radius: 0; }
-body.focus .transport { background: #151519; color: #e8e8ec; border-color: #26262c; }
-body.focus .transport button:not(.play) { background: #1f1f25; color: #e8e8ec; border-color: #33333b; }
-body.focus .transport .time, body.focus .speed label { color: #a5a5ad; }

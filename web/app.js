@@ -2,10 +2,22 @@ import { Player } from "./player.js";
 import { PianoRoll } from "./roll.js";
 import { SheetView } from "./sheet.js";
 
-const COLORS = {
-  piano: "#4f7cff", vocals: "#ec4899", guitar: "#f2a541", bass: "#3bb273", drums: "#9a9ba3", other: "#a463f2",
-  horns: "#e3b505", saxophone: "#e3b505", trumpet: "#e5484d", trombone: "#b5651d", clarinet: "#8fbf3a", flute: "#3ab0bf",
+// Five colours, as in Rousseau's videos. Each part has a default; a choice made with
+// the colour dot in the mixer is remembered per instrument.
+const PALETTE = [
+  ["Royal blue", "#3d4cff"], ["Magenta", "#ff4fd8"], ["Ice", "#dfe8ff"], ["Cyan", "#38d6ff"], ["Violet", "#9b7bff"],
+];
+const DEFAULT_COLOUR = {
+  piano: "#3d4cff", saxophone: "#ff4fd8", trumpet: "#9b7bff", trombone: "#9b7bff", clarinet: "#ff4fd8", flute: "#dfe8ff",
+  horns: "#ff4fd8", vocals: "#ff4fd8", guitar: "#38d6ff", bass: "#38d6ff", drums: "#dfe8ff", other: "#9b7bff",
 };
+function colourOf(id) {
+  try {
+    const saved = localStorage.getItem(`notewright.colour.${id}`);
+    if (saved) return saved;
+  } catch {}
+  return DEFAULT_COLOUR[id] || "#3d4cff";
+}
 const $ = (id) => document.getElementById(id);
 
 const player = new Player();
@@ -158,7 +170,7 @@ function openSong(result, base) {
 
   const tracks = result.tracks.map((t) => ({
     ...t,
-    color: COLORS[t.id] || "#888",
+    color: colourOf(t.id),
     visible: true,
     notes: t.notes.map(([start, end, pitch]) => ({ start, end, pitch })),
   }));
@@ -181,6 +193,7 @@ function openSong(result, base) {
   updateLoopButtons();
   $("separate").hidden = (result.mode || current.job.mode) === "band";
   showLineup(result);
+  paintAllRanges();
   $("song-error").hidden = !current.job.error;
   $("song-error").textContent = current.job.error ? `The last change didn't work: ${current.job.error}` : "";
 
@@ -303,7 +316,15 @@ function buildMixer(result) {
   const addRow = (label, color, mediaId, synthId, track) => {
     const tr = document.createElement("tr");
     const name = document.createElement("td");
-    if (color) name.innerHTML = `<span class="swatch" style="background:${color}"></span>`;
+    if (color && track) {
+      const dot = document.createElement("button");
+      dot.className = "swatch";
+      dot.style.background = color;
+      dot.title = `Colour for ${track.name}`;
+      dot.setAttribute("aria-label", `Colour for ${track.name}`);
+      dot.onclick = (e) => { e.stopPropagation(); openPicker(dot, track.id); };
+      name.append(dot);
+    }
     name.append(label);
     const rec = document.createElement("td");
     const syn = document.createElement("td");
@@ -339,7 +360,7 @@ function buildMixer(result) {
     const first = stem && !seen.has(stem);
     if (stem) seen.add(stem);
     const label = t.group && first ? `${t.name} (recording: all ${t.group.toLowerCase()})` : t.name;
-    addRow(label, COLORS[t.id] || COLORS[t.group?.toLowerCase()] || "#888", first ? stem : null, t.notes.length ? t.id : null, t);
+    addRow(label, t.notes.length || !t.group ? colourOf(t.id) : null, first ? stem : null, t.notes.length ? t.id : null, t);
   }
 
   const band = result.tracks.some((t) => t.stem);
@@ -369,6 +390,7 @@ function setLevels(media, synth) {
     input.value = Math.round(v * 100);
     player.setSynthVolume(id, v);
   }
+  paintAllRanges();
 }
 
 function applyPreset(name) {
@@ -410,6 +432,55 @@ function syncText() {
   const ms = Math.round(s.delay * 1000);
   return Math.abs(ms) < 5 ? "Notes in sync with the recording" : `Notes in sync with the recording (corrected by ${ms} ms)`;
 }
+
+// ---------- Colours ----------
+
+let picker = null;
+function closePicker() {
+  picker?.remove();
+  picker = null;
+  document.querySelectorAll(".swatch.open").forEach((d) => d.classList.remove("open"));
+}
+function openPicker(dot, id) {
+  const reopen = !dot.classList.contains("open");
+  closePicker();
+  if (!reopen) return;
+  dot.classList.add("open");
+  picker = document.createElement("div");
+  picker.className = "picker";
+  const row = document.createElement("div");
+  row.className = "dots";
+  for (const [name, hex] of PALETTE) {
+    const b = document.createElement("button");
+    b.style.color = hex;
+    b.classList.toggle("on", colourOf(id).toLowerCase() === hex);
+    b.innerHTML = `<i style="background:${hex}"></i>${name}`;
+    b.onclick = () => {
+      try { localStorage.setItem(`notewright.colour.${id}`, hex); } catch {}
+      dot.style.background = hex;
+      const t = current.tracks.find((x) => x.id === id);
+      if (t) t.color = hex;
+      roll.draw(player.heardTime);
+      closePicker();
+    };
+    row.append(b);
+  }
+  picker.append(row);
+  document.body.append(picker);
+  const r = dot.getBoundingClientRect();
+  picker.style.left = `${r.left + window.scrollX - 14}px`;
+  picker.style.top = `${r.top + window.scrollY - picker.offsetHeight - 14}px`;
+}
+document.addEventListener("click", (e) => { if (picker && !picker.contains(e.target)) closePicker(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closePicker(); });
+
+// Slim slider tracks show their filled part in the accent colour.
+function paintRange(el) {
+  const pct = ((el.value - el.min) / (el.max - el.min || 1)) * 100;
+  el.style.background = `linear-gradient(90deg, var(--accent) ${pct}%, var(--track) ${pct}%)`;
+}
+document.addEventListener("input", (e) => { if (e.target.matches?.('input[type="range"]')) paintRange(e.target); });
+function paintAllRanges() { document.querySelectorAll('input[type="range"]').forEach(paintRange); }
 
 // ---------- Transport ----------
 
@@ -503,7 +574,8 @@ function frame() {
     document.body.classList.toggle("playing", player.playing);
     if (!dragging) {
       $("time").textContent = fmt(t);
-      $("seek").value = player.duration ? Math.round((t / player.duration) * 1000) : 0;
+      const v = player.duration ? Math.round((t / player.duration) * 1000) : 0;
+      if (Number($("seek").value) !== v) { $("seek").value = v; paintRange($("seek")); }
     }
     if ($("stage").dataset.view !== "sheet") roll.draw(t);
     if ($("stage").dataset.view !== "roll") sheet.update(t);
