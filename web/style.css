@@ -219,3 +219,8 @@ body.focus .transport {
 }
 body.focus { background: #000; }
 body.focus .roll-pane { border-radius: 0; }
+
+/* Imported sheet music has no recording: only the transcription plays. */
+body.score .presets button[data-preset="original"],
+body.score .presets button[data-preset="both"],
+body.score #playalong-wrap { display: none; }

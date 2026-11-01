@@ -196,11 +196,18 @@ export class PianoRoll {
     ctx.globalCompositeOperation = "lighter";
     for (const { k, rgb } of sounding) {
       const [r, g, b] = rgb, cx = k.x + k.w / 2;
-      const beam = ctx.createLinearGradient(0, fall, 0, fall - 150);
-      beam.addColorStop(0, `rgba(${r},${g},${b},0.2)`);
+      // The column of light is a tall ellipse fading in every direction, so it has
+      // no hard sides: a radial gradient squeezed sideways.
+      ctx.save();
+      ctx.translate(cx, fall);
+      ctx.scale(k.w / 150, 1);
+      const beam = ctx.createRadialGradient(0, 0, 0, 0, 0, 150);
+      beam.addColorStop(0, `rgba(${r},${g},${b},0.22)`);
+      beam.addColorStop(0.5, `rgba(${r},${g},${b},0.08)`);
       beam.addColorStop(1, `rgba(${r},${g},${b},0)`);
       ctx.fillStyle = beam;
-      ctx.fillRect(cx - k.w, fall - 150, k.w * 2, 150);
+      ctx.fillRect(-150, -150, 300, 150);
+      ctx.restore();
       if (moving) this._emit(k, fall, rgb, dt);
     }
     this._drawParticles(dt);
@@ -253,7 +260,8 @@ export class PianoRoll {
       glow.addColorStop(0.5, `rgba(${r},${g},${b},0.3)`);
       glow.addColorStop(1, `rgba(${r},${g},${b},0)`);
       ctx.fillStyle = glow;
-      ctx.fillRect(cx - k.w * 1.4, fall - 8, k.w * 2.8, 22);
+      // The rectangle covers the whole gradient, so the glow fades out instead of being clipped.
+      ctx.fillRect(cx - k.w * 1.4, fall + 3 - k.w * 1.4, k.w * 2.8, k.w * 2.8);
     }
     ctx.restore();
 

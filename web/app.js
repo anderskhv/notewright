@@ -53,7 +53,7 @@ function renderJobs() {
     title.textContent = job.title;
     const sub = document.createElement("span");
     sub.className = "sub";
-    const mode = job.mode === "band" ? "Full band" : "Piano";
+    const mode = job.mode === "band" ? "Full band" : job.mode === "score" ? "Sheet music" : "Piano";
     sub.textContent = job.status === "done" ? mode
       : job.status === "error" ? `${mode} · failed`
       : `${mode} · ${job.stage}`;
@@ -146,6 +146,47 @@ $("file").addEventListener("change", async () => {
 
 const mode = () => document.querySelector('input[name="mode"]:checked').value;
 
+// ---------- Sheet music in: pick files, paste a snip, or drop files on the page ----------
+
+const SHEET_EXT = /\.(png|jpe?g|webp|gif|bmp|tiff?|heic|heif|pdf|musicxml|xml|mxl|midi?)$/i;
+const isSheetFile = (f) => f.type.startsWith("image/") || SHEET_EXT.test(f.name);
+
+async function sendSheets(files) {
+  files = [...files].filter(isSheetFile);
+  if (!files.length) return;
+  const body = new FormData();
+  files.forEach((f, i) => body.append("files", f, f.name || `snip-${i + 1}.png`));
+  const res = await fetch("/api/scores", { method: "POST", body });
+  if (!res.ok) return alert((await res.json()).detail || "Could not read that sheet music.");
+  const job = await res.json();
+  location.hash = job.id;
+  refreshJobs();
+}
+
+$("sheet-files").addEventListener("change", async () => {
+  await sendSheets($("sheet-files").files);
+  $("sheet-files").value = "";
+});
+
+// A snip copied from a web page or a screenshot tool: ⌘V anywhere outside a text field.
+document.addEventListener("paste", (e) => {
+  if (e.target.closest && e.target.closest("input, textarea, select")) return;
+  const files = [...(e.clipboardData?.files || [])].filter(isSheetFile);
+  if (!files.length) return;
+  e.preventDefault();
+  sendSheets(files);
+});
+
+document.addEventListener("dragover", (e) => {
+  if ([...e.dataTransfer.items].some((i) => i.kind === "file")) e.preventDefault();
+});
+document.addEventListener("drop", (e) => {
+  const files = [...e.dataTransfer.files];
+  if (!files.length) return;
+  e.preventDefault();
+  sendSheets(files);
+});
+
 // ---------- Song view ----------
 
 function fmt(t) {
@@ -154,19 +195,21 @@ function fmt(t) {
 }
 
 function openSong(result, base) {
+  const isScore = result.kind === "score";
+  document.body.classList.toggle("score", isScore);
   $("progress").hidden = true;
   $("song").hidden = false;
   $("song-title").textContent = result.title;
   const parts = result.tracks.filter((t) => t.notes.length).length;
-  $("song-meta").textContent = `${result.timeSignature}${result.swing ? " swing" : ""} · ${Math.round(result.bpm)} bpm · ${fmt(result.duration)}`
+  $("song-meta").textContent = (isScore ? "Sheet music · " : "") + `${result.timeSignature}${result.swing ? " swing" : ""} · ${Math.round(result.bpm)} bpm · ${fmt(result.duration)}`
     + (result.tracks.length > 1 ? ` · ${parts} parts transcribed` : "");
   $("duration").textContent = fmt(result.duration);
   $("dl-midi").href = base + result.midi;
 
-  player.load(result, base, `/api/jobs/${result.id}/envelope`);
+  player.load(result, base, isScore ? null : `/api/jobs/${result.id}/envelope`);
   player.setRate($("speed").value / 100);
   $("slow-status").textContent = "";
-  if ($("speed").value < 95) player.prepareSlow();
+  if ($("speed").value < 95 && !isScore) player.prepareSlow();
 
   const tracks = result.tracks.map((t) => ({
     ...t,
@@ -188,10 +231,10 @@ function openSong(result, base) {
   else $("sheet").innerHTML = '<p class="hint">No pitched notes were found, so there is no sheet music.</p>';
 
   buildMixer(result);
-  applyPreset("original");
+  applyPreset(isScore ? "transcription" : "original");
   setView(localStorage.getItem("notewright.view") || "both");
   updateLoopButtons();
-  $("separate").hidden = (result.mode || current.job.mode) === "band";
+  $("separate").hidden = isScore || (result.mode || current.job.mode) === "band";
   showLineup(result);
   paintAllRanges();
   $("song-error").hidden = !current.job.error;
@@ -273,7 +316,7 @@ $("separate").onclick = async () => {
 async function loadSheet(trackId) {
   const t = current.tracks.find((x) => x.id === trackId);
   // Only the piano model's parts can be read again with more or fewer notes.
-  $("detail-wrap").hidden = t.source === "yourmt3" || (t.sensitivity === undefined && !["piano", "guitar", "other"].includes(t.id));
+  $("detail-wrap").hidden = t.source === "yourmt3" || t.source === "sheet" || (t.sensitivity === undefined && !["piano", "guitar", "other"].includes(t.id));
   $("source-note").hidden = t.source !== "yourmt3";
   $("detail").value = Math.round((t.sensitivity ?? 0.5) * 100);
   $("dl-xml").href = current.base + t.sheet;
@@ -351,7 +394,7 @@ function buildMixer(result) {
     tr.append(name, rec, syn, show);
     rows.append(tr);
   };
-  addRow("Full recording", null, "original", null, null);
+  if (result.kind !== "score") addRow("Full recording", null, "original", null, null);
   // Tracks that share one separated part (e.g. sax and trumpet in "Horns") share one
   // recording slider, on the first of them.
   const seen = new Set();
@@ -503,7 +546,7 @@ $("speed").addEventListener("input", () => {
   player.setRate(v / 100);
   // Render the smooth slow copy only once the slider has come to rest.
   clearTimeout(slowTimer);
-  slowTimer = setTimeout(() => player.prepareSlow(), 800);
+  if (current?.result?.kind !== "score") slowTimer = setTimeout(() => player.prepareSlow(), 800);
 });
 
 $("loop-a").onclick = () => { player.loop.a = player.heardTime; fixLoop(); };

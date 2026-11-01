@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-from . import audio, chords, instruments, notation, transcribe, untangle, yourmt3
+from . import audio, chords, instruments, notation, score, transcribe, untangle, yourmt3
 from .config import DATA_DIR, device
 
 # Per family: transcriber and sampler voice in the browser. Horns get one track per horn.
@@ -81,13 +81,18 @@ class Job:
 _queue: "queue.Queue[str]" = queue.Queue()
 
 
-def submit(mode: str, url: str | None = None, upload: tuple[str, bytes] | None = None) -> dict:
+def submit(mode: str, url: str | None = None, upload: tuple[str, bytes] | None = None,
+           uploads: list[tuple[str, bytes]] | None = None) -> dict:
     job_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
     d = jobs_dir() / job_id
     d.mkdir()
     title = url or (upload[0] if upload else "Untitled")
     if upload:
         (d / ("upload" + Path(upload[0]).suffix.lower())).write_bytes(upload[1])
+    for i, (name, data) in enumerate(uploads or []):  # sheet music: pictures and pages, in order
+        (d / f"sheet-{i:03d}{Path(name).suffix.lower() or '.png'}").write_bytes(data)
+    if uploads:
+        title = Path(uploads[0][0]).stem if len(uploads) == 1 and uploads[0][0] not in ("image.png", "") else "Sheet music"
     record = {
         "id": job_id,
         "title": title,
@@ -184,6 +189,8 @@ def start_worker() -> None:
 
 def run(job: Job) -> None:
     d, rec, dev = job.dir, job.record, device()
+    if rec["mode"] == "score":
+        return run_score(job)
     band = rec["mode"] == "band"
 
     job.stage("Fetching audio", 0.0, 0.05)
@@ -254,6 +261,46 @@ def envelope(d: Path) -> Path:
     log = np.log10(energy + 1e-10)
     path.write_text(json.dumps({"version": result.get("version"), "fps": 100, "log": [round(float(v), 2) for v in log]}))
     return path
+
+
+def run_score(job: Job) -> None:
+    """Sheet music to a playable piece: recognise, combine, and write the usual result."""
+    d = job.dir
+    files = sorted(d.glob("sheet-[0-9][0-9][0-9].*"))
+    xmls = score.recognise(files, d / "pages", job.stage("Reading the sheet music", 0.0, 0.85))
+    job.stage("Preparing playback", 0.85, 1.0)
+    piece = score.read(score.combine(xmls))
+    if piece["title"]:
+        job.save(title=piece["title"])
+    piece["score"].write("musicxml", fp=str(d / "sheet-piano.musicxml"))
+    # No recording: a silent track keeps the player's clock (speed, loops, cursor) as it is.
+    audio.ffmpeg("-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-t", str(piece["duration"]),
+                 "-c:a", "aac", "-b:a", "32k", str(d / f"audio{audio.BROWSER_EXT}"))
+    track = {"id": "piano", "name": "Piano" if piece["staves"] > 1 else "Melody", "voice": "piano",
+             "notes": piece["notes"], "pedals": [], "sheet": "sheet-piano.musicxml", "source": "sheet"}
+    # A single line has no harmony to name; a two-staff piano part does.
+    chord_list = chords.detect([track], piece["beats"], piece["beatsPerBar"]) if piece["staves"] > 1 else []
+    notation.write_midi([track], piece["bpm"], notation.Meter(4, False), d / "transcription.mid")
+    result = {
+        "id": job.record["id"],
+        "kind": "score",
+        "title": job.record["title"],
+        "mode": "score",
+        "duration": piece["duration"],
+        "bpm": piece["bpm"],
+        "beats": piece["beats"],
+        "timeSignature": piece["timeSignature"],
+        "swing": False,
+        "beatsPerBar": piece["beatsPerBar"],
+        "beatQuarters": 1.0,
+        "audio": f"audio{audio.BROWSER_EXT}",
+        "midi": "transcription.mid",
+        "tracks": [track],
+        "chords": chord_list,
+        "lineup": None,
+        "version": int(time.time()),
+    }
+    (d / "result.json").write_text(json.dumps(result))
 
 
 def _read(path: Path) -> tuple[np.ndarray, int]:

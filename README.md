@@ -17,6 +17,7 @@ Everything runs on your own computer. Notewright uses no accounts, no cloud serv
 - **More or fewer notes**: if quiet notes are missing, such as comping chords under a solo, move the slider above the sheet music. Notewright then reads that part again from the saved model output, which takes seconds.
 - **Chords** named from the transcription, shown in the piano roll and above the sheet music.
 - **Full screen** (press F): just the sheet or the piano roll, with a player bar that fades while you play.
+- **Import sheet music**: snip piano music from a web page or PDF and press ⌘V (Ctrl+V) in Notewright, or use "Import sheet music" or drop files on the page. Pictures in any common format (PNG, JPEG, WebP, HEIC, TIFF…), PDFs, MusicXML and MIDI all work, and several snips at once become one piece, in order. The notes are read with [homr](https://github.com/liebharc/homr) optical music recognition and stored as MusicXML, so you can practise them with the piano roll, the cursor, slow tempo and loops. The first import downloads homr's models (a few hundred MB).
 - **Export** to MusicXML (opens in MuseScore, Sibelius, Finale or Dorico) and to MIDI.
 
 ## Install
@@ -93,6 +94,7 @@ It adds about 3 GB and roughly 1.5 times the song's length to each full-band tra
 | Drums | Onset detection plus a three-band energy split into kick, snare and hi-hat |
 | Beats, downbeats, meter | [Beat This!](https://github.com/CPJKU/beat_this), Foscarin et al. 2024 (MIT) |
 | Sheet music | Per-beat rhythm quantisation (straight or triplet), hand splitting and [music21](https://github.com/cuthbertLab/music21) (BSD-3-Clause) |
+| Reading sheet music from pictures | [homr](https://github.com/liebharc/homr) (AGPL-3.0, run as a separate program) and [pypdfium2](https://github.com/pypdfium2-team/pypdfium2) for PDF pages |
 | Rendering and sound | [OpenSheetMusicDisplay](https://opensheetmusicdisplay.org) (BSD-3-Clause) and [smplr](https://github.com/danigb/smplr) (MIT) |
 
 The sheet music is written on the beat grid detected in the recording, so tempo changes and rubato don't push the bar lines out of place. The player uses the same grid to move the cursor.
@@ -110,6 +112,7 @@ The sheet music is written on the beat grid detected in the recording, so tempo 
 - **Bass and vocals** are tracked as single melodic lines. Chords sung by a choir become one line.
 - **Drums** come out as kick, snare and hi-hat only.
 - **Sheet music** is a starting point, not finished engraving. It uses one voice per staff, and it does not detect meter changes in the middle of a song.
+- **Imported sheet music** plays at 100 bpm unless the page has a metronome mark; set the speed with the slider. Recognition can misread a note, a tie or a rest in dense or handwritten music, so compare with the picture before you memorise it.
 - **YouTube downloads** are for music you have the right to use.
 
 ## Development
@@ -117,6 +120,8 @@ The sheet music is written on the beat grid detected in the recording, so tempo 
 ```bash
 python -m pytest
 ```
+
+Tests live in `tests/`; `pytest.ini` keeps add-on code out of the run.
 
 The web player is plain JavaScript modules in `web/`, with no build step. `window.notewright.player` is exposed for poking at playback from the browser console.
 

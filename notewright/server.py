@@ -24,7 +24,7 @@ class UrlJob(BaseModel):
 
 
 def _mode(mode: str) -> str:
-    if mode not in ("piano", "band"):
+    if mode not in ("piano", "band"):  # sheet music arrives through /api/scores
         raise HTTPException(400, "mode must be 'piano' or 'band'")
     return mode
 
@@ -53,6 +53,15 @@ def create(job: UrlJob):
 @app.post("/api/jobs/upload")
 async def upload(file: UploadFile = File(...), mode: str = Form("piano")):
     return pipeline.submit(_mode(mode), upload=(file.filename or "upload", await file.read()))
+
+
+@app.post("/api/scores")
+async def import_score(files: list[UploadFile] = File(...)):
+    """Sheet music from pictures (screenshots, snips, photos), PDF, MusicXML or MIDI."""
+    uploads = [(f.filename or "image.png", await f.read()) for f in files]
+    if not uploads:
+        raise HTTPException(400, "No files")
+    return pipeline.submit("score", uploads=uploads)
 
 
 @app.get("/api/jobs/{job_id}")
