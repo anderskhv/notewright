@@ -48,7 +48,18 @@ def list_jobs() -> list[dict]:
     return sorted((j for j in jobs if j), key=lambda j: j["created"], reverse=True)
 
 
+class JobDeleted(Exception):
+    """The song was deleted while it was being worked on."""
+
+
+_deleted: set[str] = set()
+_running: str | None = None
+
+
 def delete_job(job_id: str) -> None:
+    if job_id == _running:
+        _deleted.add(job_id)  # the worker stops at its next progress report
+        audio.cancel_download()
     d = jobs_dir() / job_id
     if d.is_dir() and d.parent == jobs_dir():
         shutil.rmtree(d)
@@ -60,6 +71,8 @@ class Job:
         self.dir = jobs_dir() / record["id"]
 
     def save(self, **changes) -> None:
+        if self.record["id"] in _deleted:
+            raise JobDeleted(self.record["id"])
         self.record.update(changes)
         tmp = self.dir / "job.json.tmp"
         tmp.write_text(json.dumps(self.record))
@@ -118,31 +131,47 @@ def resume_pending() -> None:
 
 def worker() -> None:
     upgrade_old_jobs()
+    global _running
     while True:
         job_id = _queue.get()
-        record = read_job(job_id)
-        if not record:
-            continue
-        job = Job(record)
+        _running = job_id
         try:
-            job.save(status="running", error=None)
-            action = record.get("action") or {}
-            if action.get("type") == "retune":
-                retune(job, action["track"], action["sensitivity"])
-            elif action.get("type") == "lineup":
-                relineup(job, action["lineup"])
-            else:
-                run(job)
-            job.save(status="done", stage="Done", progress=1.0, action=None)
-        except Exception as exc:  # noqa: BLE001 - any failure is reported to the UI
+            _work(job_id)
+        except JobDeleted:
+            shutil.rmtree(jobs_dir() / job_id, ignore_errors=True)  # anything written after the delete
+        except Exception:  # noqa: BLE001 - the worker must outlive any one song
             traceback.print_exc()
-            error = f"{type(exc).__name__}: {exc}"
-            if (job.dir / "result.json").exists():
-                # A later step (reading notes again, separating) failed: the song itself still plays.
-                mode = job.record.get("mode_before") or job.record["mode"]
-                job.save(status="done", stage="Done", progress=1.0, error=error, action=None, mode=mode)
-            else:
-                job.save(status="error", error=error, action=None)
+        finally:
+            _running = None
+            _deleted.discard(job_id)
+
+
+def _work(job_id: str) -> None:
+    record = read_job(job_id)
+    if not record:
+        return
+    job = Job(record)
+    try:
+        job.save(status="running", error=None)
+        action = record.get("action") or {}
+        if action.get("type") == "retune":
+            retune(job, action["track"], action["sensitivity"])
+        elif action.get("type") == "lineup":
+            relineup(job, action["lineup"])
+        else:
+            run(job)
+        job.save(status="done", stage="Done", progress=1.0, action=None)
+    except Exception as exc:  # noqa: BLE001 - any failure is reported to the UI
+        if job_id in _deleted:
+            raise JobDeleted(job_id) from exc
+        traceback.print_exc()
+        error = f"{type(exc).__name__}: {exc}"
+        if (job.dir / "result.json").exists():
+            # A later step (reading notes again, separating) failed: the song itself still plays.
+            mode = job.record.get("mode_before") or job.record["mode"]
+            job.save(status="done", stage="Done", progress=1.0, error=error, action=None, mode=mode)
+        else:
+            job.save(status="error", error=error, action=None)
 
 
 def requeue(job_id: str, **changes) -> dict:
