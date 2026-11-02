@@ -61,7 +61,11 @@ Transcriptions are kept in `data/` next to the code. Set `NOTEWRIGHT_DATA` to ke
 
 ### Speed
 
-On a recent laptop CPU, piano mode takes about as long as the song itself, and full band mode takes a few times longer. With an NVIDIA GPU, PyTorch uses CUDA automatically. To try Apple Silicon acceleration, run `NOTEWRIGHT_DEVICE=mps python -m notewright`.
+Notewright runs the models on the fastest hardware it finds: an NVIDIA GPU, the GPU in an Apple Silicon Mac, or else the CPU. The models and their weights are the same everywhere, so the notes don't change, only the speed. If a step can't run on the GPU, it runs on the CPU instead and the terminal says so. To force the CPU, start it with `NOTEWRIGHT_DEVICE=cpu`.
+
+With a GPU, the YourMT3+ add-on and 16 GB of memory or more, instrument separation (on the GPU) and YourMT3+ (on the CPU) run at the same time.
+
+After each song, the terminal shows how long every step took. To check that two transcriptions of the same song agree note by note (for example before and after a change of hardware), run `python -m notewright.compare "Song title"`.
 
 ### Better piano in band recordings (optional add-on)
 

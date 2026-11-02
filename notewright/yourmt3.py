@@ -9,6 +9,7 @@ separate program; Notewright only reads the notes it prints. Without it, nothing
 import json
 import os
 import subprocess
+import threading
 from pathlib import Path
 from typing import Callable
 
@@ -28,19 +29,41 @@ def available() -> bool:
     return python().exists() and (ADDON / CHECKPOINT).exists()
 
 
+_running: set[subprocess.Popen] = set()
+
+
+def cancel() -> None:
+    """Stop YourMT3+ (the song was deleted, or the step running next to it failed)."""
+    for proc in list(_running):
+        proc.kill()
+
+
 def transcribe(wav: Path, progress: Callable[[float], None]) -> list:
     """All notes YourMT3+ hears: [start, end, pitch, velocity, program, is_drum]."""
     proc = subprocess.Popen(
         [str(python()), str(ADDON / "runner.py"), str(wav)],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
+    _running.add(proc)
+    # Read the notes while the progress comes in: a long song's notes don't fit in the pipe,
+    # and reading them only after the program ends would leave both sides waiting forever.
+    out_parts: list[str] = []
+    reader = threading.Thread(target=lambda: out_parts.append(proc.stdout.read()), daemon=True)
+    reader.start()
     tail = []
-    for line in proc.stderr:
-        if line.startswith("progress "):
-            progress(float(line.split()[1]))
-        else:
-            tail = (tail + [line])[-20:]
-    out = proc.stdout.read()
+    try:
+        for line in proc.stderr:
+            if line.startswith("progress "):
+                progress(float(line.split()[1]))
+            else:
+                tail = (tail + [line])[-20:]
+        reader.join()
+        out = "".join(out_parts)
+    except BaseException:
+        proc.kill()
+        raise
+    finally:
+        _running.discard(proc)
     if proc.wait() != 0:
         raise RuntimeError("YourMT3+ add-on failed: " + "".join(tail)[-500:])
     return json.loads(out)["notes"]

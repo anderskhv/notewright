@@ -12,7 +12,7 @@ def main() -> None:
     args = parser.parse_args()
     if not args.no_browser:
         os.environ["NOTEWRIGHT_OPEN"] = f"http://{args.host}:{args.port}"
-    uvicorn.run("notewright.server:app", host=args.host, port=args.port)
+    uvicorn.run("notewright.server:app", host=args.host, port=args.port, access_log=False)  # the page polls every second
 
 
 if __name__ == "__main__":

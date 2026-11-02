@@ -17,12 +17,12 @@ from typing import Callable
 import librosa
 import numpy as np
 
-from .config import MODEL_DIR, PIANO_CHECKPOINT_URL
+from .config import MODEL_DIR, PIANO_CHECKPOINT_URL, gpu_or_cpu
 
 Notes = list[list[float]]
 Progress = Callable[[float], None]
 
-_piano_model = None
+_piano_models: dict = {}  # one loaded model per device
 
 
 def _piano_checkpoint() -> Path:
@@ -36,14 +36,13 @@ def _piano_checkpoint() -> Path:
 
 
 def _load_piano_model(device: str):
-    global _piano_model
-    if _piano_model is None:
+    if device not in _piano_models:
         import torch
         from piano_transcription_inference import PianoTranscription
 
         # The checkpoint is plain tensors, so torch's default weights-only loading reads it.
-        _piano_model = PianoTranscription(device=torch.device(device), checkpoint_path=str(_piano_checkpoint()))
-    return _piano_model
+        _piano_models[device] = PianoTranscription(device=torch.device(device), checkpoint_path=str(_piano_checkpoint()))
+    return _piano_models[device]
 
 
 def sensitivity_thresholds(sensitivity: float) -> tuple[float, float]:
@@ -75,6 +74,10 @@ def even_out(y: np.ndarray, sr: int, max_gain: float = 6.0) -> np.ndarray:
 
 def model_output(path: Path, device: str, progress: Progress) -> dict[str, np.ndarray]:
     """Run the piano model; returns its per-frame probabilities for every key."""
+    return gpu_or_cpu(device, lambda dev: _model_output(path, dev, progress), "The piano model")
+
+
+def _model_output(path: Path, device: str, progress: Progress) -> dict[str, np.ndarray]:
     import torch
 
     model = _load_piano_model(device)
@@ -240,7 +243,7 @@ def drums(path: Path, progress: Progress) -> Notes:
     return notes
 
 
-_beat_model = None
+_beat_models: dict = {}
 
 
 def _fill_gaps(beats: np.ndarray) -> np.ndarray:
@@ -270,13 +273,15 @@ def beat_grid(path: Path, duration: float, device: str) -> tuple[float, list[flo
     The returned grid is extrapolated at both ends and starts on a downbeat, so beat
     index 0 is the start of bar 1 (possibly before the music, at negative time).
     """
-    global _beat_model
     from beat_this.inference import Audio2Beats
 
-    if _beat_model is None:
-        _beat_model = Audio2Beats(checkpoint_path="final0", device=device, dbn=False)
+    def track(dev: str):
+        if dev not in _beat_models:
+            _beat_models[dev] = Audio2Beats(checkpoint_path="final0", device=dev, dbn=False)
+        return _beat_models[dev](y, sr)
+
     y, sr = librosa.load(str(path), sr=22050, mono=True)
-    beats, downbeats = (np.asarray(a, dtype=float) for a in _beat_model(y, sr))
+    beats, downbeats = (np.asarray(a, dtype=float) for a in gpu_or_cpu(device, track, "Finding the beat"))
     if len(beats) < 4:
         tempo = float(np.atleast_1d(librosa.beat.beat_track(y=y, sr=sr)[0])[0]) or 120.0
         beats, downbeats = np.arange(0, duration, 60.0 / tempo), np.array([0.0])

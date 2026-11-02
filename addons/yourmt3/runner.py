@@ -24,7 +24,7 @@ ARGS = [CHECKPOINT, "-p", "2024", "-tk", "mc13_full_plus_256", "-dec", "multi-t5
 SAFE = ["utils.task_manager.TaskManager", "numpy.core.multiarray._reconstruct", "numpy.ndarray", "numpy.dtype",
         "numpy.dtypes.Int64DType", "numpy.core.multiarray.scalar", "utils.tokenizer.NoteEventTokenizer",
         "utils.event_codec.FastCodec", "utils.note_event_dataclasses.EventRange", "utils.note_event_dataclasses.Event"]
-CHUNK_SEGMENTS = 32  # ~65 s of audio per pass keeps memory flat on long songs
+CHUNK_SEGMENTS = 8  # one batch (~16 s of audio) per pass: steady progress, flat memory on long songs
 
 
 def log(*a):
@@ -68,17 +68,18 @@ def main(path: str) -> None:
     n = segments.shape[0]
     channels = model.task_manager.num_decoding_channels
     starts = [frames * i / model.audio_cfg["sample_rate"] for i in range(n)]
-    per_channel = [[] for _ in range(channels)]
+    # Events from every chunk are joined first and turned into notes once, as for a whole
+    # file in one pass: a note held across a chunk boundary stays one note.
+    events = [[] for _ in range(channels)]
     with torch.inference_mode():
         for c0 in range(0, n, CHUNK_SEGMENTS):
             tokens, _ = model.inference_file(bsz=8, audio_segments=segments[c0:c0 + CHUNK_SEGMENTS])
             for ch in range(channels):
                 zipped, _, _ = model.task_manager.detokenize_list_batches(
                     [arr[:, ch, :] for arr in tokens], starts[c0:c0 + CHUNK_SEGMENTS], return_events=True)
-                notes, _ = merge_zipped_note_events_and_ties_to_notes(zipped)
-                per_channel[ch].extend(notes)
+                events[ch].extend(zipped)
             log(f"progress {min(n, c0 + CHUNK_SEGMENTS) / n:.3f}")
-    notes = mix_notes(per_channel)
+    notes = mix_notes([merge_zipped_note_events_and_ties_to_notes(zipped)[0] for zipped in events])
     out = [[round(float(x.onset), 4), round(float(x.offset), 4), int(x.pitch), int(x.velocity) or 80, int(x.program), bool(x.is_drum)]
            for x in notes]
     json.dump({"notes": out}, stdout)

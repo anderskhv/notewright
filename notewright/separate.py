@@ -1,5 +1,6 @@
 """Source separation with Demucs (htdemucs_6s: drums, bass, other, vocals, guitar, piano)."""
 
+import random
 from pathlib import Path
 from typing import Callable
 
@@ -10,6 +11,12 @@ STEMS = ["piano", "vocals", "guitar", "bass", "drums", "other"]
 
 
 def separate(wav_path: Path, out_dir: Path, device: str, progress: Callable[[float], None]) -> dict[str, Path]:
+    from .config import gpu_or_cpu
+
+    return gpu_or_cpu(device, lambda dev: _separate(wav_path, out_dir, dev, progress), "Separating instruments")
+
+
+def _separate(wav_path: Path, out_dir: Path, device: str, progress: Callable[[float], None]) -> dict[str, Path]:
     import torch
     from demucs.api import Separator
 
@@ -20,7 +27,14 @@ def separate(wav_path: Path, out_dir: Path, device: str, progress: Callable[[flo
 
     separator = Separator(model="htdemucs_6s", device=device, callback=on_progress)
     audio, sr = sf.read(str(wav_path), dtype="float32", always_2d=True)
-    _, stems = separator.separate_tensor(torch.from_numpy(audio.T.copy()), sr)
+    # Demucs shifts the audio by a random fraction of a second before separating. Fix that
+    # shift, so the same song always gives the same parts (and the same notes).
+    state = random.getstate()
+    random.seed(0)
+    try:
+        _, stems = separator.separate_tensor(torch.from_numpy(audio.T.copy()), sr)
+    finally:
+        random.setstate(state)
 
     out_dir.mkdir(exist_ok=True)
     paths = {}

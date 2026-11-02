@@ -1,6 +1,7 @@
 """The job pipeline: fetch, separate, transcribe, notate. One job runs at a time."""
 
 import json
+import os
 import queue
 import shutil
 import threading
@@ -13,7 +14,7 @@ import numpy as np
 import soundfile as sf
 
 from . import audio, chords, instruments, notation, score, transcribe, untangle, yourmt3
-from .config import DATA_DIR, device
+from .config import DATA_DIR, JobDeleted, device
 
 # Per family: transcriber and sampler voice in the browser. Horns get one track per horn.
 FAMILY_TRACKS = {
@@ -48,10 +49,6 @@ def list_jobs() -> list[dict]:
     return sorted((j for j in jobs if j), key=lambda j: j["created"], reverse=True)
 
 
-class JobDeleted(Exception):
-    """The song was deleted while it was being worked on."""
-
-
 _deleted: set[str] = set()
 _running: str | None = None
 
@@ -60,26 +57,46 @@ def delete_job(job_id: str) -> None:
     if job_id == _running:
         _deleted.add(job_id)  # the worker stops at its next progress report
         audio.cancel_download()
+        yourmt3.cancel()
     d = jobs_dir() / job_id
     if d.is_dir() and d.parent == jobs_dir():
         shutil.rmtree(d)
+
+
+_save_lock = threading.Lock()  # two steps can report progress at once (separating and YourMT3+)
 
 
 class Job:
     def __init__(self, record: dict):
         self.record = record
         self.dir = jobs_dir() / record["id"]
+        self.timings: list[list] = []  # [stage, seconds], for the speed summary in the terminal
+        self._lap = None
 
     def save(self, **changes) -> None:
         if self.record["id"] in _deleted:
             raise JobDeleted(self.record["id"])
-        self.record.update(changes)
-        tmp = self.dir / "job.json.tmp"
-        tmp.write_text(json.dumps(self.record))
-        tmp.replace(self.dir / "job.json")
+        with _save_lock:
+            self.record.update(changes)
+            tmp = self.dir / "job.json.tmp"
+            tmp.write_text(json.dumps(self.record))
+            tmp.replace(self.dir / "job.json")
+
+    def _time(self, name: str | None) -> None:
+        now = time.monotonic()
+        if self._lap:
+            self.timings.append([self._lap[0], round(now - self._lap[1], 1)])
+        self._lap = (name, now) if name else None
+
+    def summary(self) -> str:
+        self._time(None)
+        total = sum(s for _, s in self.timings)
+        steps = " · ".join(f"{name} {s:.0f} s" for name, s in self.timings)
+        return f"Notewright: \"{self.record['title']}\" took {total:.0f} s on {device()}: {steps}"
 
     def stage(self, name: str, start: float, end: float):
         """Progress callback mapping a stage's 0..1 onto the job's start..end."""
+        self._time(name)
         self.save(stage=name, progress=round(start, 3))
         last = [0.0]
 
@@ -160,6 +177,9 @@ def _work(job_id: str) -> None:
             relineup(job, action["lineup"])
         else:
             run(job)
+        if job.timings or job._lap:
+            print(job.summary(), flush=True)
+            job.save(timings=job.timings)
         job.save(status="done", stage="Done", progress=1.0, action=None)
     except Exception as exc:  # noqa: BLE001 - any failure is reported to the UI
         if job_id in _deleted:
@@ -243,9 +263,15 @@ def run(job: Job) -> None:
         from .separate import separate
 
         has_ymt3 = yourmt3.available()
-        stems = separate(wav, d / "stems", dev, job.stage("Separating instruments", 0.08, 0.3 if has_ymt3 else 0.4))
+        if has_ymt3 and dev != "cpu" and _memory_gb() >= 15:  # a "16 GB" machine reports a little less
+            # Separation runs on the GPU and YourMT3+ on the CPU, so they can work at the same time
+            # (with room for both in memory; with less, one after the other avoids swapping).
+            stems, notes = _separate_and_ymt3(job, wav, dev)
+        else:
+            stems = separate(wav, d / "stems", dev, job.stage("Separating instruments", 0.08, 0.3 if has_ymt3 else 0.4))
+            if has_ymt3:
+                notes = yourmt3.transcribe(wav, job.stage("Transcribing with YourMT3+", 0.3, 0.45))
         if has_ymt3:
-            notes = yourmt3.transcribe(wav, job.stage("Transcribing with YourMT3+", 0.3, 0.45))
             (d / "yourmt3.json").write_text(json.dumps(notes))
         # Keep Demucs' own stems, so the line-up can be changed later without separating again.
         raw = d / "stems" / "raw"
@@ -330,6 +356,37 @@ def run_score(job: Job) -> None:
         "version": int(time.time()),
     }
     (d / "result.json").write_text(json.dumps(result))
+
+
+def _memory_gb() -> float:
+    try:
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2**30
+    except (ValueError, OSError, AttributeError):
+        return 0.0
+
+
+def _separate_and_ymt3(job: Job, wav: Path, dev: str) -> tuple[dict, list]:
+    from concurrent.futures import ThreadPoolExecutor
+
+    from .separate import separate
+
+    report = job.stage("Separating instruments and transcribing with YourMT3+", 0.08, 0.45)
+    done = {"separate": 0.0, "yourmt3": 0.0}
+
+    def part(key):
+        def update(fraction: float) -> None:
+            done[key] = fraction
+            report((done["separate"] + done["yourmt3"]) / 2)
+        return update
+
+    with ThreadPoolExecutor(1) as pool:
+        future = pool.submit(yourmt3.transcribe, wav, part("yourmt3"))
+        try:
+            stems = separate(wav, job.dir / "stems", dev, part("separate"))
+        except BaseException:
+            yourmt3.cancel()  # don't wait minutes for a result nobody will use
+            raise
+        return stems, future.result()
 
 
 def _read(path: Path) -> tuple[np.ndarray, int]:
