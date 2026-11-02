@@ -2,7 +2,7 @@
 
 [YourMT3+](https://github.com/mimbres/YourMT3) (Chang et al., 2024) transcribes many instruments at once and was trained on band recordings. In Notewright's tests it finds the piano in a band far better than the solo-piano model, so when this add-on is installed, full-band transcriptions take their piano notes from it. Everything else (separation, horns, bass, drums) stays as it is.
 
-Install (needs Python 3.12; on a Mac `brew install python@3.12`):
+Notewright's installer offers it. To add it later (it fetches its own Python 3.12):
 
 ```bash
 addons/yourmt3/install.sh

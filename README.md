@@ -22,16 +22,24 @@ Everything runs on your own computer. Notewright uses no accounts, no cloud serv
 
 ## Install
 
-You need Python 3.11–3.13, [ffmpeg](https://ffmpeg.org), and a JavaScript runtime for YouTube downloads: [Node.js](https://nodejs.org) or [Deno](https://deno.com).
+On a Mac or Linux, paste this into Terminal:
 
-On macOS with [Homebrew](https://brew.sh):
+```bash
+curl -fsSL https://raw.githubusercontent.com/anderskhv/notewright/main/install.sh | bash
+```
+
+It needs no Homebrew and no administrator password. It installs Notewright into `~/notewright` with its own Python, downloads the models (about 650 MB), offers the YourMT3+ add-on, and puts **Notewright** on your Desktop. Double-click that to start: it updates Notewright and opens it in your browser. Running the command again also updates. The first install downloads a few GB and takes 10 to 20 minutes, depending on your connection.
+
+<details>
+<summary>Install by hand instead</summary>
+
+You need Python 3.11–3.13, [ffmpeg](https://ffmpeg.org), and a JavaScript runtime for YouTube downloads: [Node.js](https://nodejs.org) or [Deno](https://deno.com). On macOS with [Homebrew](https://brew.sh):
 
 ```bash
 brew install python@3.13 ffmpeg node
 ```
 
 Then create the environment with `python3.13`. On a Mac, plain `python3` is Apple's older Python 3.9, which can't install the requirements.
-
 
 ```bash
 git clone https://github.com/anderskhv/notewright.git
@@ -40,16 +48,21 @@ python3.13 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
+python -m notewright.fetch
 ```
 
+</details>
+
 ## Run
+
+Double-click **Notewright** on your Desktop, or in Terminal:
 
 ```bash
 source .venv/bin/activate
 python -m notewright
 ```
 
-This opens http://127.0.0.1:8765 in your browser. The first transcription downloads the models once into `~/.cache`: about 165 MB for the piano model, 80 MB for the beat tracker, 80 MB for the separator and 330 MB for the instrument recogniser. After that, transcription works offline. Instrument sounds for playback load from the web the first time they are used.
+This opens http://127.0.0.1:8765 in your browser. The models live in `~/.cache` (the installer or `python -m notewright.fetch` downloads them; otherwise the first song does). After that, transcription works offline. Instrument sounds for playback load from the web the first time they are used.
 
 If YouTube answers "Sign in to confirm you're not a bot", let yt-dlp use your browser's YouTube sign-in. Name your browser (`chrome`, `safari`, `firefox`, `edge` or `brave`):
 
