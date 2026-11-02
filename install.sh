@@ -26,7 +26,10 @@ echo "uv $(uv --version | cut -d' ' -f2)"
 
 step "2/5  Notewright"
 if [ -d "$DIR/.git" ]; then
-  git -C "$DIR" pull --ff-only -q && echo "Updated $DIR"
+  if ! git -C "$DIR" pull --ff-only -q origin main; then
+    echo "Couldn't update $DIR with git. To see why, run: git -C $DIR status"; exit 1
+  fi
+  echo "Updated $DIR to $(git -C "$DIR" log -1 --format='%h (%cr)')"
 elif [ -e "$DIR" ]; then
   echo "$DIR exists but isn't a Notewright download. Move it away, or set NOTEWRIGHT_DIR."; exit 1
 elif command -v git >/dev/null && git --version >/dev/null 2>&1; then
