@@ -108,7 +108,7 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 2px; back
 }
 .library li:hover .remove { opacity: 1; }
 
-main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: column; }
+main { flex: 1; min-width: 0; overflow-x: hidden; overflow-y: auto; display: flex; flex-direction: column; }
 .welcome, .progress-view { max-width: 560px; margin: 12vh auto 0; padding: 0 20px; }
 .welcome h1, .progress-view h1 { font-size: 26px; letter-spacing: -0.02em; margin: 0 0 14px; }
 .progress-view .bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
@@ -120,7 +120,9 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
 .meta { margin: 2px 0 0; color: var(--muted); font-variant-numeric: tabular-nums; }
 .views { display: flex; gap: 4px; }
 
-.stage { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; padding: 0 20px; }
+/* In a short window the music keeps its room and the page scrolls to the controls. */
+.stage { flex: 1; min-height: 340px; display: flex; flex-direction: column; gap: 10px; padding: 0 20px; }
+.stage[data-view="both"] { min-height: 520px; }
 .sheet-pane, .roll-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; border-radius: var(--radius); overflow: hidden; }
 .stage[data-view="sheet"] .roll-pane, .stage[data-view="roll"] .sheet-pane { display: none; }
 .sheet-pane { background: #fffefb; color: #1d1d1f; border: 1px solid var(--line); }
@@ -132,8 +134,11 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
 .sheet-tools .detail input { width: 120px; accent-color: #3f6fe0; }
 .sheet-tools .link { color: #3f6fe0; text-decoration: none; }
 .icon { width: 30px; padding: 4px 0; }
-.sheet { flex: 1; overflow-y: auto; position: relative; padding: 0 8px; }
-.roll-pane canvas { flex: 1; width: 100%; min-height: 0; display: block; }
+.sheet { flex: 1; min-height: 0; overflow-y: auto; position: relative; padding: 0 8px; }
+/* The canvas fills its pane but never sizes it: its pixel size follows the pane, and
+   letting it also set the pane's size would feed back into itself. */
+.roll-pane { position: relative; }
+.roll-pane canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 
 .transport {
   display: flex; align-items: center; gap: 12px;

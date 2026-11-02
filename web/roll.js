@@ -59,8 +59,8 @@ export class PianoRoll {
     for (let p = LO; p <= HI; p++) {
       if (isBlack(p)) this.keyX.set(p, { x: this.keyX.get(p - 1).x + ww * OFFSET[p % 12], w: ww * 0.56 });
     }
-    // A real white key is about six times as long as it is wide.
-    this.kbH = Math.round(Math.max(48, Math.min(ww * 6.2, this.h * 0.24)));
+    // A real white key is about six times as long as it is wide; never let it look stubby.
+    this.kbH = Math.round(Math.min(Math.max(ww * 4.5, Math.min(ww * 6.2, this.h * 0.3)), this.h * 0.45));
     this._drawKeyboard();
   }
 
@@ -250,41 +250,51 @@ export class PianoRoll {
     ctx.drawImage(this.keyboard, 0, fall, w, kbH);
     const litWhite = new Map(), litBlack = new Map();
     for (const s of sounding) (isBlack(s.pitch) ? litBlack : litWhite).set(s.pitch, s);
-    for (const { k } of litWhite.values()) this._whiteKey(ctx, k, fall + KEY_TOP, keyLen, true);
-    // Black keys are drawn again on top so a pressed white key does not cover them.
+    // A played key goes down and takes the note's colour: full where the note lands, fading
+    // towards the front of the key. Painted on, not added as light (that barely shows on
+    // ivory), and white keys first, so the black keys stay black on top of them.
+    const colour = ({ k, rgb }, len) => {
+      const [r, g, b] = rgb;
+      const wash = ctx.createLinearGradient(0, fall + KEY_TOP, 0, fall + KEY_TOP + len);
+      wash.addColorStop(0, `rgba(${r},${g},${b},0.9)`);
+      wash.addColorStop(0.45, `rgba(${r},${g},${b},0.5)`);
+      wash.addColorStop(1, `rgba(${r},${g},${b},0.04)`);
+      ctx.fillStyle = wash;
+      ctx.beginPath();
+      ctx.roundRect(k.x + 0.6, fall + KEY_TOP, k.w - 1.2, len, [0, 0, 2, 2]);
+      ctx.fill();
+    };
+    for (const s of litWhite.values()) {
+      this._whiteKey(ctx, s.k, fall + KEY_TOP, keyLen, true);
+      colour(s, keyLen - 1.5);
+    }
     if (litWhite.size) {
       for (let p = LO; p <= HI; p++) {
         if (!isBlack(p) || litBlack.has(p)) continue;
         if (litWhite.has(p - 1) || litWhite.has(p + 1)) this._blackKey(ctx, this.keyX.get(p), fall + KEY_TOP, this.bk, false);
       }
     }
-    for (const { k } of litBlack.values()) this._blackKey(ctx, k, fall + KEY_TOP, this.bk, true);
-    // The note's colour falls on the key it plays, strongest where it lands, and spills a
-    // little onto the neighbours, the way coloured light falls on a real keyboard.
+    for (const s of litBlack.values()) {
+      this._blackKey(ctx, s.k, fall + KEY_TOP, this.bk, true);
+      colour(s, this.bk);
+    }
+    // Light spills a little onto the neighbours, and glows where the note meets the key.
     ctx.save();
     ctx.globalCompositeOperation = "lighter";
-    for (const { k, rgb, pitch } of sounding) {
+    for (const { k, rgb } of sounding) {
       const [r, g, b] = rgb, cx = k.x + k.w / 2;
-      const len = isBlack(pitch) ? this.bk : keyLen;
-      const wash = ctx.createLinearGradient(0, fall + KEY_TOP, 0, fall + KEY_TOP + len);
-      const a = isBlack(pitch) ? 0.55 : 0.32;
-      wash.addColorStop(0, `rgba(${r},${g},${b},${a})`);
-      wash.addColorStop(0.55, `rgba(${r},${g},${b},${a * 0.45})`);
-      wash.addColorStop(1, `rgba(${r},${g},${b},${a * 0.15})`);
-      ctx.fillStyle = wash;
-      ctx.fillRect(k.x + 1, fall + KEY_TOP, k.w - 2, len);
       ctx.save();
       ctx.translate(cx, fall + KEY_TOP);
       ctx.scale(2, 1);
       const pool = ctx.createRadialGradient(0, 0, 0, 0, 0, keyLen * 0.45);
-      pool.addColorStop(0, `rgba(${r},${g},${b},0.16)`);
+      pool.addColorStop(0, `rgba(${r},${g},${b},0.1)`);
       pool.addColorStop(1, `rgba(${r},${g},${b},0)`);
       ctx.fillStyle = pool;
       ctx.fillRect(-keyLen * 0.45, 0, keyLen * 0.9, keyLen * 0.45);
       ctx.restore();
       // Where the note meets the key: a soft coloured glow, not a white flash.
       const glow = ctx.createRadialGradient(cx, fall + KEY_TOP - 1, 0, cx, fall + KEY_TOP - 1, k.w * 1.2);
-      glow.addColorStop(0, `rgba(${Math.min(255, r + 90)},${Math.min(255, g + 90)},${Math.min(255, b + 90)},0.35)`);
+      glow.addColorStop(0, `rgba(${r},${g},${b},0.3)`);
       glow.addColorStop(1, `rgba(${r},${g},${b},0)`);
       ctx.fillStyle = glow;
       ctx.fillRect(cx - k.w * 1.2, fall + KEY_TOP - 1 - k.w * 1.2, k.w * 2.4, k.w * 2.4);
