@@ -11,11 +11,21 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import pipeline
+from . import __version__, pipeline
 
 WEB = Path(__file__).resolve().parent.parent / "web"
 
 app = FastAPI(title="Notewright")
+
+
+@app.middleware("http")
+async def always_fresh_page(request, call_next):
+    """The page's own files are checked for updates on every load (a quick "not modified"
+    when nothing changed), so an update shows without clearing the browser's cache."""
+    response = await call_next(request)
+    if not request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 class UrlJob(BaseModel):
@@ -31,6 +41,7 @@ def _mode(mode: str) -> str:
 
 @app.on_event("startup")
 def startup() -> None:
+    print(f"Notewright {__version__}", flush=True)
     pipeline.start_worker()
     pipeline.resume_pending()
     if os.environ.get("NOTEWRIGHT_OPEN"):
