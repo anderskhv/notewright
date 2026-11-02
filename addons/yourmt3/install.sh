@@ -8,10 +8,10 @@ cd "$(dirname "$0")"
 export PATH="$HOME/.local/bin:$PATH"
 if command -v uv >/dev/null; then  # uv fetches Python 3.12 itself and installs much faster
   [ -x venv/bin/python ] || uv venv -q --python 3.12 venv
-  TORCH=()
-  [ "$(uname -s)" = Linux ] && TORCH=(--torch-backend auto)
-  uv pip install -q --python venv/bin/python "${TORCH[@]}" torch torchaudio
-  uv pip install -q --python venv/bin/python "${TORCH[@]}" -r requirements.txt
+  TORCH=""  # a plain string: macOS's bash 3.2 treats an empty array as unset
+  if [ "$(uname -s)" = Linux ]; then TORCH="--torch-backend=auto"; fi
+  uv pip install -q --python venv/bin/python $TORCH torch torchaudio
+  uv pip install -q --python venv/bin/python $TORCH -r requirements.txt
 else
   PY="${PYTHON:-python3.12}"
   if ! command -v "$PY" >/dev/null; then

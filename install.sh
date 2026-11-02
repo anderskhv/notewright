@@ -40,9 +40,11 @@ cd "$DIR"
 
 step "3/5  Libraries (a few GB the first time; updates take seconds)"
 [ -x .venv/bin/python ] || uv venv -q --python 3.13 .venv
-TORCH=()
-[ "$(uname -s)" = Linux ] && TORCH=(--torch-backend auto)  # CPU or the right CUDA build
-uv pip install -q --python .venv/bin/python "${TORCH[@]}" -r requirements.txt
+# On Linux, uv picks the CPU or the right CUDA build of PyTorch. (A plain string, not an
+# array: macOS's bash 3.2 treats an empty array as unset.)
+TORCH=""
+if [ "$(uname -s)" = Linux ]; then TORCH="--torch-backend=auto"; fi
+uv pip install -q --python .venv/bin/python $TORCH -r requirements.txt
 # ffmpeg and a JavaScript runtime (for YouTube) from Python packages, when the computer
 # doesn't have them already.
 if ! command -v ffmpeg >/dev/null; then
