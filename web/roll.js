@@ -1,13 +1,14 @@
 // Falling-notes piano roll: notes drop onto a keyboard and light the keys they play.
 //
-// The look follows Rousseau's piano videos: all 88 keys of a real-looking keyboard in
-// dim light, crisp notes with a soft glow, and light, smoke and sparks where notes land.
+// The look follows Rousseau's piano videos: all 88 keys of a real piano (ivory and ebony keys,
+// a wooden key slip with its red felt), crisp notes with a soft glow, and light where notes land.
 // It stays cheap: the keyboard is drawn once per resize and copied each frame; a note's
 // glow is two translucent rounded rectangles behind it; smoke is one pre-drawn sprite.
 
 const BLACK = new Set([1, 3, 6, 8, 10]);
 const isBlack = (p) => BLACK.has(p % 12);
 const LO = 21, HI = 108; // A0..C8
+const KEY_TOP = 7; // the key slip above the keys, in pixels
 // Black keys sit off-centre in their groups, as on a real keyboard.
 const OFFSET = { 1: 0.58, 3: 0.74, 6: 0.56, 8: 0.66, 10: 0.78 };
 
@@ -71,62 +72,88 @@ export class PianoRoll {
     kb.height = Math.max(1, kbH * dpr);
     const c = kb.getContext("2d");
     c.setTransform(dpr, 0, 0, dpr, 0, 0);
-    c.fillStyle = "#0b0b10";
+    // Behind and between the keys: the dark key bed.
+    c.fillStyle = "#08080a";
     c.fillRect(0, 0, w, kbH);
-    const lip = Math.max(3, Math.round(kbH * 0.06));
-    const ambient = c.createLinearGradient(0, 5, 0, kbH);
-    ambient.addColorStop(0, "#5d6175");
-    ambient.addColorStop(0.08, "#aeb3c6");
-    ambient.addColorStop(0.6, "#c9cddb");
-    ambient.addColorStop(1, "#b9bdcc");
-    for (const p of this.whites) {
-      const k = this.keyX.get(p);
-      c.fillStyle = ambient;
-      c.fillRect(k.x + 0.5, 5, k.w - 1, kbH - 5 - lip);
-      c.fillStyle = "#8f93a5"; // the key's front face
-      c.fillRect(k.x + 0.5, kbH - lip, k.w - 1, lip);
-      c.fillStyle = "rgba(0,0,0,0.35)";
-      c.fillRect(k.x + k.w - 0.5, 5, 1, kbH - 5);
-    }
-    const bk = kbH * 0.64;
+    // The key slip a real piano has above the keys: dark wood with a red felt strip.
+    const slip = KEY_TOP - 2;
+    const wood = c.createLinearGradient(0, 0, 0, slip);
+    wood.addColorStop(0, "#1c1714");
+    wood.addColorStop(0.6, "#0f0c0b");
+    wood.addColorStop(1, "#060505");
+    c.fillStyle = wood;
+    c.fillRect(0, 0, w, slip);
+    c.fillStyle = "rgba(255,240,220,0.10)"; // its polished edge catching the light
+    c.fillRect(0, 0, w, 1);
+    c.fillStyle = "#5e1418"; // the felt
+    c.fillRect(0, slip, w, 2);
+    for (const p of this.whites) this._whiteKey(c, this.keyX.get(p), KEY_TOP, kbH - KEY_TOP, false);
+    const bk = (kbH - KEY_TOP) * 0.63;
     for (let p = LO; p <= HI; p++) {
       if (!isBlack(p)) continue;
       const k = this.keyX.get(p);
-      const shadow = c.createLinearGradient(k.x + k.w, 0, k.x + k.w + ww * 0.25, 0);
-      shadow.addColorStop(0, "rgba(0,0,0,0.35)");
+      const shadow = c.createLinearGradient(k.x + k.w, 0, k.x + k.w + ww * 0.3, 0);
+      shadow.addColorStop(0, "rgba(0,0,0,0.28)");
       shadow.addColorStop(1, "rgba(0,0,0,0)");
       c.fillStyle = shadow;
-      c.fillRect(k.x + k.w, 5, ww * 0.25, bk);
-      this._blackKey(c, k, 5, bk, null);
+      c.fillRect(k.x + k.w, KEY_TOP, ww * 0.3, bk + 3);
+      this._blackKey(c, k, KEY_TOP, bk, false);
     }
-    c.fillStyle = "rgba(160,170,255,0.55)"; // the light line along the key slip
-    c.fillRect(0, 0, w, 1);
     this.bk = bk;
   }
 
-  _blackKey(c, k, top, len, rgb) {
-    const body = c.createLinearGradient(k.x, 0, k.x + k.w, 0);
-    if (rgb) {
-      const [r, g, b] = rgb;
-      body.addColorStop(0, `rgb(${r * 0.6 | 0},${g * 0.6 | 0},${b * 0.7 | 0})`);
-      body.addColorStop(0.5, `rgb(${r},${g},${b})`);
-      body.addColorStop(1, `rgb(${r * 0.6 | 0},${g * 0.6 | 0},${b * 0.7 | 0})`);
-    } else {
-      body.addColorStop(0, "#050507");
-      body.addColorStop(0.45, "#1b1c22");
-      body.addColorStop(1, "#060608");
+  // An ivory key: warm white, a soft shadow under the key slip, a rounded front edge.
+  // Pressed, it sits lower: a little shorter, shaded at its sides.
+  _whiteKey(c, k, top, len, pressed) {
+    const x = k.x + 0.6, wd = k.w - 1.2;
+    const front = Math.max(3, Math.round(len * 0.055));
+    const body = len - front - (pressed ? 1.5 : 0);
+    const face = c.createLinearGradient(0, top, 0, top + body);
+    face.addColorStop(0, pressed ? "#8d8a84" : "#9c9890");
+    face.addColorStop(0.07, pressed ? "#d4d0c6" : "#e9e5db");
+    face.addColorStop(0.7, pressed ? "#e2ded4" : "#f6f3eb");
+    face.addColorStop(1, pressed ? "#dcd8ce" : "#efebe2");
+    c.fillStyle = face;
+    c.beginPath();
+    c.roundRect(x, top, wd, body, [0, 0, 1.5, 1.5]);
+    c.fill();
+    c.fillStyle = pressed ? "#a7a399" : "#c9c4b8"; // the front of the key
+    c.beginPath();
+    c.roundRect(x, top + body, wd, front, [0, 0, 2.5, 2.5]);
+    c.fill();
+    if (pressed) {
+      const side = c.createLinearGradient(x, 0, x + wd, 0);
+      side.addColorStop(0, "rgba(0,0,0,0.22)");
+      side.addColorStop(0.18, "rgba(0,0,0,0)");
+      side.addColorStop(0.82, "rgba(0,0,0,0)");
+      side.addColorStop(1, "rgba(0,0,0,0.22)");
+      c.fillStyle = side;
+      c.fillRect(x, top, wd, body);
     }
+  }
+
+  // An ebony key: a flat top, a sloped front catching the light, a soft sheen.
+  _blackKey(c, k, top, len, pressed) {
+    const slope = Math.max(4, Math.round(len * 0.13));
+    const flat = len - slope - (pressed ? 2 : 0);
+    const body = c.createLinearGradient(k.x, 0, k.x + k.w, 0);
+    body.addColorStop(0, "#050505");
+    body.addColorStop(0.5, pressed ? "#141313" : "#1d1c1b");
+    body.addColorStop(1, "#060606");
     c.fillStyle = body;
     c.beginPath();
-    c.roundRect(k.x, top, k.w, len, [0, 0, 2, 2]);
+    c.roundRect(k.x, top, k.w, flat + slope, [0, 0, 1.5, 1.5]);
     c.fill();
-    c.fillStyle = rgb ? "rgba(255,255,255,0.35)" : "rgba(160,170,220,0.18)"; // gloss
-    c.fillRect(k.x + k.w * 0.32, top + 3, k.w * 0.18, Math.max(0, len - 17));
-    const bevel = c.createLinearGradient(0, top + len - 12, 0, top + len);
-    bevel.addColorStop(0, rgb ? "rgba(255,255,255,0.5)" : "#3d3f4b");
-    bevel.addColorStop(1, rgb ? "rgba(255,255,255,0.15)" : "#15161b");
-    c.fillStyle = bevel;
-    c.fillRect(k.x + 1, top + len - 12, k.w - 2, 11);
+    const sheen = c.createLinearGradient(0, top, 0, top + flat);
+    sheen.addColorStop(0, "rgba(255,255,255,0)");
+    sheen.addColorStop(1, pressed ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.09)");
+    c.fillStyle = sheen;
+    c.fillRect(k.x + k.w * 0.18, top, k.w * 0.64, flat);
+    const front = c.createLinearGradient(0, top + flat, 0, top + flat + slope);
+    front.addColorStop(0, pressed ? "#2a2928" : "#3a3836");
+    front.addColorStop(1, "#121212");
+    c.fillStyle = front;
+    c.fillRect(k.x + 1, top + flat, k.w - 2, slope - 1);
   }
 
   draw(t) {
@@ -218,65 +245,59 @@ export class PianoRoll {
     }
     ctx.restore();
 
-    // The keyboard, then the keys being played, lit from above.
-    ctx.drawImage(this.keyboard, 0, fall, w, this.kbH);
+    // The keyboard, then the keys being played: pressed down, lit by the falling note.
+    const kbH = this.kbH, keyLen = kbH - KEY_TOP;
+    ctx.drawImage(this.keyboard, 0, fall, w, kbH);
     const litWhite = new Map(), litBlack = new Map();
     for (const s of sounding) (isBlack(s.pitch) ? litBlack : litWhite).set(s.pitch, s);
-    for (const { k, rgb } of litWhite.values()) {
-      const [r, g, b] = rgb;
-      const face = ctx.createLinearGradient(0, fall + 5, 0, fall + this.kbH);
-      face.addColorStop(0, "#ffffff");
-      face.addColorStop(0.35, `rgb(${Math.min(255, r + 120)},${Math.min(255, g + 120)},${Math.min(255, b + 40)})`);
-      face.addColorStop(1, `rgb(${r},${g},${b})`);
-      ctx.fillStyle = face;
-      ctx.fillRect(k.x + 0.5, fall + 5, k.w - 1, this.kbH - 5);
-    }
-    // Black keys are drawn again on top so a lit white key does not cover them.
+    for (const { k } of litWhite.values()) this._whiteKey(ctx, k, fall + KEY_TOP, keyLen, true);
+    // Black keys are drawn again on top so a pressed white key does not cover them.
     if (litWhite.size) {
       for (let p = LO; p <= HI; p++) {
         if (!isBlack(p) || litBlack.has(p)) continue;
-        const k = this.keyX.get(p);
-        if (litWhite.has(p - 1) || litWhite.has(p + 1)) this._blackKey(ctx, { x: k.x, w: k.w }, fall + 5, this.bk, null);
+        if (litWhite.has(p - 1) || litWhite.has(p + 1)) this._blackKey(ctx, this.keyX.get(p), fall + KEY_TOP, this.bk, false);
       }
     }
-    for (const { k, rgb } of litBlack.values()) this._blackKey(ctx, { x: k.x, w: k.w }, fall + 5, this.bk, rgb);
-    // Light spilling from each lit key onto its neighbours.
+    for (const { k } of litBlack.values()) this._blackKey(ctx, k, fall + KEY_TOP, this.bk, true);
+    // The note's colour falls on the key it plays, strongest where it lands, and spills a
+    // little onto the neighbours, the way coloured light falls on a real keyboard.
     ctx.save();
     ctx.globalCompositeOperation = "lighter";
-    for (const { k, rgb } of sounding) {
+    for (const { k, rgb, pitch } of sounding) {
       const [r, g, b] = rgb, cx = k.x + k.w / 2;
+      const len = isBlack(pitch) ? this.bk : keyLen;
+      const wash = ctx.createLinearGradient(0, fall + KEY_TOP, 0, fall + KEY_TOP + len);
+      const a = isBlack(pitch) ? 0.55 : 0.32;
+      wash.addColorStop(0, `rgba(${r},${g},${b},${a})`);
+      wash.addColorStop(0.55, `rgba(${r},${g},${b},${a * 0.45})`);
+      wash.addColorStop(1, `rgba(${r},${g},${b},${a * 0.15})`);
+      ctx.fillStyle = wash;
+      ctx.fillRect(k.x + 1, fall + KEY_TOP, k.w - 2, len);
       ctx.save();
-      ctx.translate(cx, fall + 6);
-      ctx.scale(2.2, 1);
-      const pool = ctx.createRadialGradient(0, 0, 0, 0, 0, this.kbH * 0.5);
-      pool.addColorStop(0, `rgba(${r},${g},${b},0.3)`);
-      pool.addColorStop(0.4, `rgba(${r},${g},${b},0.12)`);
+      ctx.translate(cx, fall + KEY_TOP);
+      ctx.scale(2, 1);
+      const pool = ctx.createRadialGradient(0, 0, 0, 0, 0, keyLen * 0.45);
+      pool.addColorStop(0, `rgba(${r},${g},${b},0.16)`);
       pool.addColorStop(1, `rgba(${r},${g},${b},0)`);
       ctx.fillStyle = pool;
-      ctx.fillRect(-this.kbH * 0.5, 0, this.kbH, this.kbH * 0.5);
+      ctx.fillRect(-keyLen * 0.45, 0, keyLen * 0.9, keyLen * 0.45);
       ctx.restore();
-      const glow = ctx.createRadialGradient(cx, fall + 3, 0, cx, fall + 3, k.w * 1.4);
-      glow.addColorStop(0, "rgba(255,255,255,0.6)");
-      glow.addColorStop(0.5, `rgba(${r},${g},${b},0.3)`);
+      // Where the note meets the key: a soft coloured glow, not a white flash.
+      const glow = ctx.createRadialGradient(cx, fall + KEY_TOP - 1, 0, cx, fall + KEY_TOP - 1, k.w * 1.2);
+      glow.addColorStop(0, `rgba(${Math.min(255, r + 90)},${Math.min(255, g + 90)},${Math.min(255, b + 90)},0.35)`);
       glow.addColorStop(1, `rgba(${r},${g},${b},0)`);
       ctx.fillStyle = glow;
-      // The rectangle covers the whole gradient, so the glow fades out instead of being clipped.
-      ctx.fillRect(cx - k.w * 1.4, fall + 3 - k.w * 1.4, k.w * 2.8, k.w * 2.8);
+      ctx.fillRect(cx - k.w * 1.2, fall + KEY_TOP - 1 - k.w * 1.2, k.w * 2.4, k.w * 2.4);
     }
     ctx.restore();
-
     this._drawChords(t, windowEnd, fall, css);
   }
 
   _drawChords(t, windowEnd, fall, css) {
     const { ctx, w } = this;
-    let now = null;
-    const next = [];
     ctx.textAlign = "right";
     ctx.font = "500 14px system-ui, sans-serif";
-    for (const [start, end, name] of this.chords || []) {
-      if (start <= t && t < end) now = name;
-      else if (start > t && next.length < 2) next.push(name);
+    for (const [start, , name] of this.chords || []) {
       if (start <= t || start > windowEnd) continue;
       const y = Math.round(fall - (start - t) * this.pps) + 0.5;
       ctx.strokeStyle = css.getPropertyValue("--roll-chord-line");
@@ -285,20 +306,6 @@ export class PianoRoll {
       ctx.fillText(name, w - 8, y - 5);
     }
     ctx.textAlign = "start";
-    if (!now) return;
-    ctx.save();
-    ctx.font = "300 32px system-ui, sans-serif";
-    ctx.shadowColor = "rgba(91,108,255,0.7)";
-    ctx.shadowBlur = 20;
-    ctx.fillStyle = css.getPropertyValue("--roll-chord-now");
-    ctx.fillText(now, 22, 50);
-    const width = ctx.measureText(now).width;
-    ctx.restore();
-    if (next.length) {
-      ctx.font = "14px system-ui, sans-serif";
-      ctx.fillStyle = css.getPropertyValue("--roll-chord");
-      ctx.fillText(`→ ${next.join("  ")}`, 32 + width, 48);
-    }
   }
 
   _tint(rgb) {
@@ -319,14 +326,14 @@ export class PianoRoll {
   _emit(k, y, rgb, dt) {
     const parts = this.particles;
     if (parts.length > 600) return;
-    // About 60 sparks and 8 puffs of smoke a second per sounding key.
-    if (Math.random() < 30 * dt) {
-      for (let i = 0; i < 2; i++) {
+    // About 12 fine sparks and 6 puffs of smoke a second per sounding key.
+    if (Math.random() < 12 * dt) {
+      for (let i = 0; i < 1; i++) {
         parts.push({ kind: 0, x: k.x + Math.random() * k.w, y: y - 2, vx: (Math.random() - 0.5) * 40, vy: -40 - Math.random() * 90,
           life: 0, max: 0.5 + Math.random() * 0.7, rgb });
       }
     }
-    if (Math.random() < 8 * dt) {
+    if (Math.random() < 6 * dt) {
       parts.push({ kind: 1, x: k.x + k.w / 2 + (Math.random() - 0.5) * k.w, y: y - 6, vx: (Math.random() - 0.5) * 12, vy: -18 - Math.random() * 25,
         life: 0, max: 1.2 + Math.random() * 1.2, size: 16 + Math.random() * 22, rgb });
     }
@@ -345,8 +352,8 @@ export class PianoRoll {
       if (p.kind === 0) {
         p.vy += 30 * dt;
         const [r, g, b] = p.rgb;
-        ctx.fillStyle = `rgba(${Math.min(255, r + 120)},${Math.min(255, g + 120)},${Math.min(255, b + 120)},${a})`;
-        ctx.fillRect(p.x, p.y, 1.6, 1.6);
+        ctx.fillStyle = `rgba(${Math.min(255, r + 120)},${Math.min(255, g + 120)},${Math.min(255, b + 120)},${a * 0.7})`;
+        ctx.fillRect(p.x, p.y, 1.2, 1.2);
       } else {
         const s = p.size * (1 + p.life * 0.6);
         ctx.globalAlpha = 0.14 * a;
