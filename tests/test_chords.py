@@ -33,3 +33,25 @@ def test_changes_are_merged_and_silence_skipped():
     out = chords.detect(tracks, BEATS, 4)
     assert [c[2] for c in out] == ["C", "G7"]
     assert out[0][:2] == [0.0, 2.0]
+
+
+def test_form_is_the_whole_chorus_not_its_repeating_section():
+    import numpy as np
+
+    from notewright.chords import _form
+
+    rng = np.random.default_rng(1)
+    A = [rng.random(12) for _ in range(8)]
+    B = [rng.random(12) for _ in range(8)]
+    chorus = A + A + B + A                                     # AABA: A repeats every 8 bars
+    profiles = np.array([p + rng.random(12) * 0.3 for _ in range(4) for p in chorus])
+    assert _form(profiles, 1) == 32
+
+
+def test_no_repetition_means_no_averaging():
+    import numpy as np
+
+    from notewright.chords import _form
+
+    rng = np.random.default_rng(2)
+    assert _form(rng.random((128, 12)), 1) is None
