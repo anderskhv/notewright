@@ -54,10 +54,13 @@ def recognise(files: list[Path], work: Path, progress) -> list[Path]:
     """MusicXML (or MIDI) files, one per picture or page, in the order given."""
     work.mkdir(parents=True, exist_ok=True)
     items: list[tuple[str, Path]] = []
+    from_pdf: dict[Path, tuple[Path, int]] = {}  # page picture -> (its PDF, page number)
     for f in files:
         ext = f.suffix.lower()
         if ext == ".pdf":
-            items += [("picture", p) for p in _pdf_pages(f, work)]
+            pages = _pdf_pages(f, work)
+            items += [("picture", p) for p in pages]
+            from_pdf.update({p: (f, i) for i, p in enumerate(pages)})
         elif ext in IMAGES:
             items.append(("picture", _as_png(f, work / f"{f.stem}.png")))
         elif ext in NOTATION:
@@ -76,6 +79,16 @@ def recognise(files: list[Path], work: Path, progress) -> list[Path]:
         if run.returncode or not xml.exists():
             last = (run.stderr or run.stdout).strip().splitlines()[-1:] or ["no music found"]
             raise RuntimeError(f"Could not read the notes in picture {done + 1}: {last[0]}")
+        if path in from_pdf:
+            # The note reader skips text: a lead sheet's chord symbols come from the PDF itself.
+            from . import leadsheet
+
+            try:
+                pdf, page = from_pdf[path]
+                title = leadsheet.pdf_title(pdf) if page == 0 else None
+                leadsheet.add_chords(xml, leadsheet.chords_on_page(pdf, page), title)
+            except Exception as err:  # noqa: BLE001 - chords are extra; never lose the notes over them
+                print(f"Notewright: could not read chord symbols on {path.name}: {err}", flush=True)
         out.append(xml)
         done += 1
     progress(1.0)
@@ -120,9 +133,16 @@ def read(score) -> dict:
     spq = 60.0 / bpm  # seconds per quarter note
     sigs = list(score.recurse().getElementsByClass(meter.TimeSignature))
     ts = sigs[0] if sigs else meter.TimeSignature("4/4")
-    notes = []
+    from music21 import harmony
+
+    notes, symbols = [], []
     for part in score.parts:
-        for n in part.stripTies().flatten().notes:
+        flat = part.stripTies().flatten()
+        for cs in flat.getElementsByClass(harmony.ChordSymbol):
+            symbols.append((float(cs.offset) * spq, cs))
+        for n in flat.notes:
+            if isinstance(n, harmony.ChordSymbol):
+                continue
             start, end = float(n.offset) * spq, float(n.offset + n.quarterLength) * spq
             for p in n.pitches:
                 notes.append([round(start, 4), round(max(end, start + 0.05), 4), int(p.midi), 80])
@@ -138,6 +158,57 @@ def read(score) -> dict:
         "duration": round(length * spq + 1.0, 3),
         "timeSignature": ts.ratioString,
         "beatsPerBar": max(1, int(round(ts.barDuration.quarterLength))),
-        "title": re.sub(r"^\d+[.)]?\s+", "", title.strip()),  # "1 Flat Foot Floogie": drop the exercise number
+        "title": _title(title),
         "staves": len(score.parts),
+        "symbols": sorted(symbols, key=lambda x: x[0]),
+        "spq": spq,
     }
+
+
+def display_name(cs) -> str:
+    """music21's "E-maj7/B-" as a reader writes it: "E♭maj7/B♭"."""
+    fig = cs.figure
+    fig = re.sub(r"^([A-G])-", r"\1♭", fig)
+    fig = re.sub(r"^([A-G])#", r"\1♯", fig)
+    fig = re.sub(r"/([A-G])-", r"/\1♭", fig)
+    return re.sub(r"o(?=\d|$|/)", "dim", fig)        # music21 writes a diminished chord with an o
+
+
+def chord_part(symbols: list, duration: float, bar_seconds: float) -> tuple[list, list]:
+    """The chord symbols as [start, end, name], and a simple piano part that plays them.
+
+    Voicing: the root (or the slash bass) low, the other chord tones in the middle of the
+    keyboard; struck when the chord starts and again at every new bar while it lasts.
+    """
+    names, notes = [], []
+    for i, (start, cs) in enumerate(symbols):
+        end = symbols[i + 1][0] if i + 1 < len(symbols) else duration
+        if end <= start:
+            continue
+        names.append([round(start, 3), round(end, 3), display_name(cs)])
+        try:
+            bass = (cs.bass() or cs.root()).pitchClass
+            tones = [p.pitchClass for p in cs.pitches if p.pitchClass != cs.root().pitchClass]
+        except Exception:  # noqa: BLE001
+            continue
+        low = 36 + (bass - 36) % 12                       # C2..B2
+        mid = sorted({52 + (pc - 52) % 12 for pc in tones})[:4]   # E3..D#4
+        t = start
+        while t < end - 0.05:
+            nxt = min(end, t + bar_seconds)
+            for m in [low] + mid:
+                notes.append([round(t, 4), round(nxt, 4), m, 62 if m == low else 54])
+            t = nxt
+    return names, sorted(notes)
+
+
+def _title(title: str) -> str:
+    """The piece's title as read from the page, or "" when it is not one.
+
+    "1 Flat Foot Floogie": the exercise number goes. A chord symbol is not a title (the note
+    reader takes the first text it sees, which on a lead sheet can be the first chord).
+    """
+    from .leadsheet import _CHORD
+
+    title = re.sub(r"^\d+[.)]?\s+", "", title.strip())
+    return "" if _CHORD.match(title.replace("-", "♭")) or _CHORD.match(title) else title

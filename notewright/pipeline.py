@@ -341,9 +341,17 @@ def run_score(job: Job) -> None:
                  "-c:a", "aac", "-b:a", "32k", str(d / f"audio{audio.BROWSER_EXT}"))
     track = {"id": "piano", "name": "Piano" if piece["staves"] > 1 else "Melody", "voice": "piano",
              "notes": piece["notes"], "pedals": [], "sheet": "sheet-piano.musicxml", "source": "sheet"}
-    # A single line has no harmony to name; a two-staff piano part does.
-    chord_list = chords.detect([track], piece["beats"], piece["beatsPerBar"]) if piece["staves"] > 1 else []
-    notation.write_midi([track], piece["bpm"], notation.Meter(4, False), d / "transcription.mid")
+    tracks = [track]
+    if piece["symbols"]:
+        # A lead sheet: its own chord symbols, and a part that plays them.
+        bar = piece["beatsPerBar"] * piece["spq"]
+        chord_list, comp = score.chord_part(piece["symbols"], piece["duration"], bar)
+        if comp:
+            tracks.append({"id": "chords", "name": "Chords", "voice": "piano", "notes": comp, "pedals": [], "source": "sheet"})
+    else:
+        # A single line has no harmony to name; a two-staff piano part does.
+        chord_list = chords.detect([track], piece["beats"], piece["beatsPerBar"]) if piece["staves"] > 1 else []
+    notation.write_midi(tracks, piece["bpm"], notation.Meter(4, False), d / "transcription.mid")
     result = {
         "id": job.record["id"],
         "kind": "score",
@@ -358,7 +366,7 @@ def run_score(job: Job) -> None:
         "beatQuarters": 1.0,
         "audio": f"audio{audio.BROWSER_EXT}",
         "midi": "transcription.mid",
-        "tracks": [track],
+        "tracks": tracks,
         "chords": chord_list,
         "lineup": None,
         "version": int(time.time()),

@@ -10,6 +10,7 @@ const PALETTE = [
 const DEFAULT_COLOUR = {
   piano: "#3d4cff", saxophone: "#ff4fd8", trumpet: "#9b7bff", trombone: "#9b7bff", clarinet: "#ff4fd8", flute: "#dfe8ff",
   horns: "#ff4fd8", vocals: "#ff4fd8", guitar: "#38d6ff", bass: "#38d6ff", drums: "#dfe8ff", other: "#9b7bff",
+  chords: "#9b7bff",
 };
 function colourOf(id) {
   try {
