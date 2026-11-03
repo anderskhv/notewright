@@ -28,6 +28,10 @@ FAMILY_TRACKS = {
 }
 HORN_VOICES = {"trumpet": "trumpet", "trombone": "trombone", "clarinet": "clarinet", "flute": "flute"}
 # Bass stops at middle C: walking lines live below it, and a higher limit invites octave errors.
+# Harmonics of a bass note that stay in the bass part when piano is filtered out of it:
+# the first six keep its sound; above them a low note's harmonics crowd so close together
+# that protecting them would protect the piano too (tested on a Ron Carter trio).
+BASS_PROTECTED_PARTIALS = 6
 MONO_RANGE = {"bass": (30.0, 262.0), "vocals": (80.0, 1100.0), "horns": (80.0, 1400.0)}
 # Default note sensitivity per polyphonic track (0.5 is the piano model's own default).
 SENSITIVITY = {"piano": 0.5, "guitar": 0.4, "other": 0.25}
@@ -286,6 +290,10 @@ def run(job: Job) -> None:
             traceback.print_exc()
             lineup = instruments.normalise_lineup(instruments.lineup_by_level(wav, stems))
             lineup["source"] = "loudness"
+        if has_ymt3 and "bass" in lineup["families"]:
+            # Which bass: YourMT3+ names the instrument note by note, and on a Ron Carter
+            # trio it heard the upright that the sound-event model called electric.
+            lineup["bassKind"] = yourmt3.bass_kind(notes) or lineup.get("bassKind")
         tracks = _band(job, {n: _read(p) for n, p in stems.items()}, lineup, 0.47 if has_ymt3 else 0.45)
         extra["lineup"] = lineup
     else:
@@ -416,19 +424,23 @@ def _band(job: Job, stems: dict[str, tuple[np.ndarray, int]], lineup: dict, star
     families = lineup["families"]
     span = (0.95 - start - 0.05) / max(1, len(families))
     piano_done = None
-    ymt3 = _yourmt3_piano(d, lineup)
+    ymt3_all = _yourmt3_all(d)
+    ymt3 = yourmt3.piano_notes(ymt3_all, "guitar" in lineup["families"]) if ymt3_all is not None else None
+    piano_notes = None
     if "piano" in families and "horns" in families:
         lo = start + 0.05
         piano_done = _untangle(job, parts, paths, sr, lo, lo + 2 * span, ymt3)
     elif "piano" in families and ymt3 is not None:
         piano_done = {"piano": _ymt3_track(ymt3)}
-    for i, family in enumerate(families):
+    # Piano first: its notes are needed to clean the bass part.
+    for i, family in enumerate(sorted(families, key=lambda f: f != "piano")):
         kind, voice = FAMILY_TRACKS[family]
         lo = start + 0.05 + i * span
         report = job.stage(f"Transcribing {instruments.NAMES.get(family, family).split(' ')[0].lower()}", lo, lo + span)
         stem = {"stem": f"stems/{family}{audio.BROWSER_EXT}", "stemId": family}
         if family == "piano" and piano_done:
             tracks.append({**piano_done["piano"], **stem})
+            piano_notes = piano_done["piano"]["notes"]
             continue
         if family == "horns":
             if piano_done and "horns" in piano_done:
@@ -450,18 +462,74 @@ def _band(job: Job, stems: dict[str, tuple[np.ndarray, int]], lineup: dict, star
         name = instruments.NAMES[family]
         if family == "bass" and lineup.get("bassKind") == "double":
             name = "Double bass"
-        track = _transcribe(d, family, name, kind, voice, paths[family], dev, report)
+        if family == "bass":
+            track = _bass(d, name, voice, parts, paths, sr, piano_notes, ymt3_all, report)
+        else:
+            track = _transcribe(d, family, name, kind, voice, paths[family], dev, report)
+        if family == "piano":
+            piano_notes = track["notes"]
         tracks.append({**track, **stem})
     for wav in paths.values():
         wav.unlink(missing_ok=True)
     return tracks
 
 
-def _yourmt3_piano(d: Path, lineup: dict) -> list | None:
+def _yourmt3_all(d: Path) -> list | None:
     path = d / "yourmt3.json"
-    if not path.exists():
-        return None
-    return yourmt3.piano_notes(json.loads(path.read_text()), "guitar" in lineup["families"])
+    return json.loads(path.read_text()) if path.exists() else None
+
+
+def _bass(d: Path, name: str, voice: str, parts: dict, paths: dict, sr: int, piano_notes: list | None,
+          ymt3_all: list | None, report) -> dict:
+    """The bass line, and the bass part's audio with the piano taken out of it.
+
+    Notes: from YourMT3+ when it heard the bass (tighter timing, notes above C4),
+    otherwise pitch-tracked from the bass part. Either way each start moves to the
+    nearest pluck in the bass part's own audio.
+    Audio: Demucs leaves piano in the bass part (on a trio, a high piano note made the
+    bass part twice as loud at that pitch for 43% of notes); every transcribed piano
+    note's harmonics move from the bass part to the piano part (22% after), except where
+    the bass itself plays them.
+    """
+    heard = yourmt3.bass_notes(ymt3_all) if ymt3_all is not None else []
+    tracked = transcribe.monophonic(paths["bass"], *MONO_RANGE["bass"], report)
+    if piano_notes and "piano" in parts:
+        piano_audio, bass_audio = untangle.separate(parts["piano"], parts["bass"], sr, piano_notes,
+                                                    heard + tracked, protect_partials=BASS_PROTECTED_PARTIALS)
+        for family, y in (("piano", piano_audio), ("bass", bass_audio)):
+            parts[family] = y
+            sf.write(str(paths[family]), y.T, sr)
+            audio.to_browser(paths[family], d / "stems" / f"{family}{audio.BROWSER_EXT}")
+        tracked = transcribe.monophonic(paths["bass"], *MONO_RANGE["bass"], report)  # without the piano now
+    plucks = transcribe.attacks(parts["bass"], sr)
+    # The model's starts are already close (17 ms spread); the pitch tracker's run late.
+    notes = combine_bass(transcribe.snap_to_attacks(heard, plucks, 0.035),
+                         transcribe.snap_to_attacks(tracked, plucks, 0.08))
+    track = {"id": "bass", "name": name, "voice": voice, "notes": notes, "pedals": []}
+    if len(heard) >= 40:
+        track["source"] = "yourmt3"
+    report(1.0)
+    return track
+
+
+def combine_bass(heard: list, tracked: list, gap: float = 0.08) -> list:
+    """One bass line from YourMT3+'s bass notes and the pitch tracker's.
+
+    YourMT3+ times notes well and hears high ones, but on a walking line it files about
+    half the notes under other instruments. So its notes come first, and the pitch
+    tracker fills in wherever YourMT3+ has no bass note; each note then ends where the
+    next one starts (a bass line is one note at a time).
+    """
+    starts = np.array(sorted(n[0] for n in heard))
+    line = [list(n) for n in heard]
+    for n in tracked:
+        if not len(starts) or np.min(np.abs(starts - n[0])) > gap:
+            line.append(list(n))
+    line.sort()
+    for a, b in zip(line, line[1:]):
+        if a[1] > b[0]:
+            a[1] = max(a[0] + 0.03, b[0])
+    return line
 
 
 def _ymt3_track(notes: list) -> dict:

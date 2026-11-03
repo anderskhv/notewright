@@ -117,9 +117,10 @@ It adds about 3 GB and roughly 1.5 times the song's length to each full-band tra
 | Horns (sax, trumpet, trombone) | One melodic line from the horn part, divided between the horns by register and phrase |
 | Piano and horns together | The piano is transcribed twice, from its own part and from piano and horn parts together with the horn line filtered out (a loud horn hides quiet comping), and the notes are combined; then each piano note's harmonics are filtered out of the horn audio (score-informed separation), and notes that start with a piano chord and die away are dropped from the horn line |
 | Piano, guitar, other | [High-resolution piano transcription](https://github.com/qiuqiangkong/piano_transcription_inference), Kong et al. 2021 (MIT) |
-| Bass, vocal melody | Probabilistic YIN pitch tracking ([librosa](https://librosa.org)) plus onset detection |
+| Bass | With the YourMT3+ add-on: its bass notes, filled in by pitch tracking wherever it filed a note under another instrument. Every note start is moved to the pluck in the bass part, and the piano's notes are filtered out of the bass part first |
+| Vocal melody (and bass without the add-on) | Probabilistic YIN pitch tracking ([librosa](https://librosa.org)) plus onset detection |
 | Drums | Onset detection plus a three-band energy split into kick, snare and hi-hat |
-| Beats, downbeats, meter | [Beat This!](https://github.com/CPJKU/beat_this), Foscarin et al. 2024 (MIT) |
+| Beats, downbeats, meter | [Beat This!](https://github.com/CPJKU/beat_this), Foscarin et al. 2024 (MIT), counted at one tempo level through the song (no switches to half or double time), with the bar lines kept on its downbeats |
 | Sheet music | Per-beat rhythm quantisation (straight or triplet), hand splitting and [music21](https://github.com/cuthbertLab/music21) (BSD-3-Clause) |
 | Reading sheet music from pictures | [homr](https://github.com/liebharc/homr) (AGPL-3.0, run as a separate program) and [pypdfium2](https://github.com/pypdfium2-team/pypdfium2) for PDF pages |
 | Rendering and sound | [OpenSheetMusicDisplay](https://opensheetmusicdisplay.org) (BSD-3-Clause) and [smplr](https://github.com/danigb/smplr) (MIT) |
@@ -147,6 +148,8 @@ The sheet music is written on the beat grid detected in the recording, so tempo 
 ```bash
 python -m pytest
 ```
+
+To check a change against numbers rather than by ear, transcribe the same songs before and after and compare `python -m notewright.scorecard "Song title"`: bass notes missed and without a pluck, bass range, piano left in the bass part, and tempo steadiness.
 
 Tests live in `tests/`; `pytest.ini` keeps add-on code out of the run.
 

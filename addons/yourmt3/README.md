@@ -1,6 +1,6 @@
 # YourMT3+ add-on (optional)
 
-[YourMT3+](https://github.com/mimbres/YourMT3) (Chang et al., 2024) transcribes many instruments at once and was trained on band recordings. In Notewright's tests it finds the piano in a band far better than the solo-piano model, so when this add-on is installed, full-band transcriptions take their piano notes from it. Everything else (separation, horns, bass, drums) stays as it is.
+[YourMT3+](https://github.com/mimbres/YourMT3) (Chang et al., 2024) transcribes many instruments at once and was trained on band recordings. In Notewright's tests it finds the piano in a band far better than the solo-piano model, so when this add-on is installed, full-band transcriptions take their piano notes from it. Its bass notes are also used: on a Ron Carter trio its note starts were about four times tighter than pitch tracking, and it tells an upright from an electric bass. It files about half of a walking line under other instruments, so pitch tracking fills those in. Separation, horns and drums stay as they are.
 
 Notewright's installer offers it. To add it later (it fetches its own Python 3.12):
 

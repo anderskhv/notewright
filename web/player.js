@@ -32,6 +32,23 @@ class DrumKit {
   dispose() { for (const p of Object.values(this.parts)) p.dispose(); }
 }
 
+// The upright bass: Smolken's recorded pizzicato, whose samples stop at C4 (notes above
+// it would not sound at all), with the General MIDI acoustic bass for the notes above.
+const UPRIGHT_TOP = 60; // C4
+class UprightBass {
+  constructor(ctx) {
+    this.low = Smolken(ctx, { instrument: "Pizzicato" });
+    // The soundfont is 9 dB quieter than the recorded upright at the C4/C#4 boundary (measured).
+    this.high = Soundfont(ctx, { instrument: "acoustic_bass", volumeToGain: (v) => (v * v / 16129) * 2.8 });
+    this.ready = Promise.all([this.low.ready, this.high.ready]);
+    const parts = [this.low, this.high];
+    this.output = { set volume(v) { for (const p of parts) p.output.volume = v; }, addEffect: (...a) => parts.forEach((p) => p.output.addEffect(...a)) };
+  }
+  start(note) { (note.note > UPRIGHT_TOP ? this.high : this.low).start(note); }
+  stop() { this.low.stop(); this.high.stop(); }
+  dispose() { this.low.dispose(); this.high.dispose(); }
+}
+
 // Sync model.
 // - The full recording is the master: the clock follows the element's reported
 //   position (only fresh reports count, since some browsers update it coarsely).
@@ -236,7 +253,7 @@ export class Player {
     const make = () => {
       if (voice === "piano") return SplendidGrandPiano(ctx);
       if (voice === "drums") return new DrumKit(ctx, jazz);
-      if (voice === "acoustic_bass") return Smolken(ctx, { instrument: "Pizzicato" });
+      if (voice === "acoustic_bass") return new UprightBass(ctx);
       if (VCSL[voice]) return Versilian(ctx, { instrument: VCSL[voice] });
       return Soundfont(ctx, { instrument: voice });
     };

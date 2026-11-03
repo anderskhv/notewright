@@ -181,6 +181,31 @@ def monophonic(path: Path, fmin: float, fmax: float, progress: Progress, gate: f
     return _merge_glitches(notes)
 
 
+def attacks(y: np.ndarray, sr: int) -> np.ndarray:
+    """Times where notes are struck or plucked: onsets, moved back to where the energy starts rising."""
+    mono = y.mean(axis=0) if y.ndim == 2 else y
+    return librosa.onset.onset_detect(y=np.asarray(mono, dtype=np.float32), sr=sr, hop_length=128,
+                                      backtrack=True, units="time")
+
+
+def snap_to_attacks(notes: list, times: np.ndarray, window: float) -> list:
+    """Move each note's start to the nearest attack within the window, keeping its end.
+
+    Pitch trackers and note models place a start a few frames off the pluck; for a bass
+    line that blurs the time feel (swing lives in 10-20 ms). The attack in the part's own
+    audio is where the note really begins.
+    """
+    if not len(times):
+        return notes
+    out = []
+    for n in notes:
+        i = int(np.clip(np.searchsorted(times, n[0]), 1, len(times) - 1))
+        near = times[i - 1] if abs(times[i - 1] - n[0]) <= abs(times[i] - n[0]) else times[i]
+        start = float(near) if abs(near - n[0]) <= window and near < n[1] - 0.02 else n[0]
+        out.append([round(start, 4), *n[1:]])
+    return out
+
+
 def _merge_glitches(notes: list) -> Notes:
     """Fold pitch flickers (A, tiny B, A) back into one A, unless the second A was re-attacked."""
     out: Notes = []
@@ -267,6 +292,93 @@ def _fill_gaps(beats: np.ndarray) -> np.ndarray:
     return np.array(out)
 
 
+def _local_beat(iv: np.ndarray, i: int, reach: int = 8) -> float:
+    lo, hi = max(0, i - reach), min(len(iv), i + reach + 1)
+    return float(np.median(iv[lo:hi]))
+
+
+def _fix_tempo_octave(beats: np.ndarray) -> np.ndarray:
+    """Count the whole song at one tempo level.
+
+    Beat trackers switch between half and double time inside a song (on a Ron Carter
+    trio: 188 bpm, then 94, then 188 again). Every switch moves the bar lines, so a chord
+    chart or the form can no longer line up. Passages where the local beat is about
+    twice the song's typical beat get a beat in between; passages at about half of it
+    lose every other beat (keeping the ones that continue the beat before).
+    """
+    if len(beats) < 16:
+        return beats
+    iv = np.diff(beats)
+    local = np.array([_local_beat(iv, i) for i in range(len(iv))])
+    typical = float(np.median(local))
+    ratio = local / typical
+    out = [beats[0]]
+    i = 0
+    while i < len(iv):
+        if 1.7 <= ratio[i] <= 2.35:          # counted at half speed here: add the missing beat
+            out += [beats[i] + iv[i] / 2, beats[i + 1]]
+            i += 1
+        elif 0.42 <= ratio[i] <= 0.6:        # counted at double speed: a run of short intervals
+            j = i
+            while j < len(iv) and 0.42 <= ratio[j] <= 0.6:
+                j += 1
+            run = beats[i:j + 1]
+            # Keep every other beat, starting where a beat at the typical spacing lands.
+            phase = 0 if len(out) < 2 or abs((run[0] - out[-2]) - typical) <= abs((run[1] - out[-2]) - typical) else 1
+            kept = list(run[phase::2])
+            if kept and abs(kept[0] - out[-1]) < 1e-9:
+                kept = kept[1:]
+            out += kept
+            if j < len(beats) - 1 and (not kept or abs(kept[-1] - beats[j]) > 1e-9):
+                out.append(beats[j])
+            i = j
+        else:
+            out.append(beats[i + 1])
+            i += 1
+    return np.array(sorted(set(np.round(out, 4))))
+
+
+def _anchor_bars(beats: np.ndarray, downbeats: np.ndarray, per_bar: int) -> tuple[np.ndarray, int]:
+    """Keep the bar lines on the tracker's downbeats through the whole song.
+
+    The grid counts bars every per_bar beats from the first downbeat, so one extra or
+    missing beat anywhere moved every later bar line. Here the downbeats are followed:
+    where a steady run of them says the bar line has moved, the bar before it gets
+    exactly per_bar evenly spaced beats, so the error stays inside that one bar. A lone
+    downbeat that disagrees with its neighbours is the tracker's mistake and is ignored.
+    Returns the beats and the index of the first downbeat.
+    """
+    if len(downbeats) < 3 or len(beats) < per_bar * 3:
+        idx = np.searchsorted(beats, downbeats - 0.03) if len(downbeats) else np.array([0])
+        return beats, int(idx[0]) if len(idx) else 0
+    near = []
+    for t in downbeats:
+        k = int(np.argmin(np.abs(beats - t)))
+        if abs(beats[k] - t) <= 0.1:
+            near.append(k)
+    near = sorted(set(near))
+    if len(near) < 3:
+        return beats, near[0] if near else 0
+    out = list(beats[: near[0] + 1])
+    anchor = near[0]
+    for j in range(1, len(near)):
+        k = near[j] - anchor
+        steady = j + 1 < len(near) and (near[j + 1] - near[j]) % per_bar == 0
+        if k % per_bar == 0:
+            out += list(beats[anchor + 1: near[j] + 1])
+        elif steady and k >= per_bar // 2:
+            bars = max(1, round(k / per_bar))
+            keep = (bars - 1) * per_bar
+            out += list(beats[anchor + 1: anchor + keep + 1])
+            a, b = beats[anchor + keep], beats[near[j]]
+            out += list(np.linspace(a, b, per_bar + 1)[1:])
+        else:
+            continue                          # a lone odd downbeat: not an anchor
+        anchor = near[j]
+    out += list(beats[anchor + 1:])
+    return np.array(out), near[0]
+
+
 def beat_grid(path: Path, duration: float, device: str) -> tuple[float, list[float], int, bool]:
     """Tempo, beat times, beats per bar and compound time, from the Beat This! tracker (Foscarin et al. 2024).
 
@@ -286,13 +398,16 @@ def beat_grid(path: Path, duration: float, device: str) -> tuple[float, list[flo
         tempo = float(np.atleast_1d(librosa.beat.beat_track(y=y, sr=sr)[0])[0]) or 120.0
         beats, downbeats = np.arange(0, duration, 60.0 / tempo), np.array([0.0])
 
-    beats = _fill_gaps(beats)
+    beats = _fix_tempo_octave(_fill_gaps(beats))
     # Beats per bar: the most common number of beats between consecutive downbeats.
     idx = np.searchsorted(beats, downbeats - 0.03)
     counts = np.diff(idx)
     counts = counts[(counts >= 2) & (counts <= 12)]
     per_bar = int(np.bincount(counts).argmax()) if len(counts) else 4
-    first_down = int(idx[0]) if len(idx) else 0
+    if per_bar not in (6, 9, 12):
+        beats, first_down = _anchor_bars(beats, downbeats, per_bar)
+    else:
+        first_down = int(idx[0]) if len(idx) else 0
     compound = per_bar in (6, 9, 12)
     if compound:
         # The tracker followed eighth notes in 6/8, 9/8 or 12/8: keep every third one,

@@ -91,8 +91,14 @@ def drop_doubled(piano_notes: list, horn_notes: list) -> list:
 
 
 def separate(piano: np.ndarray, horns: np.ndarray, sr: int, piano_notes: list, horn_notes: list,
-             pedals: list | None = None) -> tuple[np.ndarray, np.ndarray]:
-    """Move each piano note's harmonics out of the horn audio and into the piano audio."""
+             pedals: list | None = None, protect_partials: int | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """Move each piano note's harmonics out of the horn audio and into the piano audio.
+
+    Works the same for any part that piano leaks into (horns, bass): horn_notes are that
+    part's own notes, whose harmonics stay. protect_partials limits that to the first few
+    harmonics: a low bass note's harmonics lie so close together higher up that
+    protecting all of them would protect the piano notes too.
+    """
     spec = _stft(horns)
     n_bins, frames = spec.shape[1], spec.shape[2]
     keep = np.ones((n_bins, frames), dtype=np.float32)
@@ -100,7 +106,7 @@ def separate(piano: np.ndarray, horns: np.ndarray, sr: int, piano_notes: list, h
     protect = np.zeros((n_bins, frames), dtype=bool)
     for start, end, pitch, _ in horn_notes:
         a, b = max(0, int(start * sr / HOP) - 1), min(frames, int(end * sr / HOP) + 2)
-        for s in _harmonic_bins(pitch, sr, n_bins):
+        for s in _harmonic_bins(pitch, sr, n_bins)[:protect_partials]:
             protect[s, a:b] = True
     pedal_ends = np.array([p[1] for p in pedals or []])
     for start, end, pitch, _ in piano_notes:
