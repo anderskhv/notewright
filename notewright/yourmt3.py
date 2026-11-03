@@ -96,3 +96,18 @@ def bass_kind(notes: list) -> str | None:
     if len(progs) < 12:  # a minute of a ballad can give only a couple of dozen
         return None
     return "double" if sum(p == ACOUSTIC_BASS for p in progs) >= len(progs) / 2 else "electric"
+
+
+# General MIDI drum keys, folded onto the kit Notewright plays: kick, snare, cymbal.
+KICKS, SNARES = {35, 36}, {37, 38, 39, 40, 41, 43, 45, 47, 48, 50}  # toms play as snare
+
+
+def drum_notes(notes: list) -> list:
+    """Its drum hits as [start, end, key, velocity]: 36 kick, 38 snare, the cymbal key otherwise."""
+    out = []
+    for n in notes:
+        if not n[5]:
+            continue
+        key = 36 if n[2] in KICKS else 38 if n[2] in SNARES else n[2]
+        out.append([n[0], max(n[1], n[0] + 0.05), key, n[3]])
+    return sorted(out)

@@ -439,8 +439,13 @@ def _band(job: Job, stems: dict[str, tuple[np.ndarray, int]], lineup: dict, star
         report = job.stage(f"Transcribing {instruments.NAMES.get(family, family).split(' ')[0].lower()}", lo, lo + span)
         stem = {"stem": f"stems/{family}{audio.BROWSER_EXT}", "stemId": family}
         if family == "piano" and piano_done:
-            tracks.append({**piano_done["piano"], **stem})
-            piano_notes = piano_done["piano"]["notes"]
+            piano = dict(piano_done["piano"])
+            if piano.get("source") == "yourmt3":
+                # YourMT3+ reports no dynamics (velocity 1): without this the piano plays
+                # at a whisper next to the bass and drums.
+                piano["notes"] = transcribe.loudness(piano["notes"], parts["piano"], sr)
+            tracks.append({**piano, **stem})
+            piano_notes = piano["notes"]
             continue
         if family == "horns":
             if piano_done and "horns" in piano_done:
@@ -464,6 +469,13 @@ def _band(job: Job, stems: dict[str, tuple[np.ndarray, int]], lineup: dict, star
             name = "Double bass"
         if family == "bass":
             track = _bass(d, name, voice, parts, paths, sr, piano_notes, ymt3_all, report)
+        elif family == "drums" and ymt3_all is not None and _hears_drums(ymt3_all, parts["drums"].shape[-1] / sr):
+            # YourMT3+ hears a jazz kit (ride, snare, brushes); the onset classifier only
+            # knew kick, snare and hi-hat. Ron Carter trio: 84% of its cymbal hits on the
+            # beat or the swung upbeat, against 77%.
+            notes = transcribe.loudness(yourmt3.drum_notes(ymt3_all), parts["drums"], sr)
+            track = {"id": "drums", "name": name, "voice": voice, "notes": notes, "pedals": [], "source": "yourmt3"}
+            report(1.0)
         else:
             track = _transcribe(d, family, name, kind, voice, paths[family], dev, report)
         if family == "piano":
@@ -472,6 +484,15 @@ def _band(job: Job, stems: dict[str, tuple[np.ndarray, int]], lineup: dict, star
     for wav in paths.values():
         wav.unlink(missing_ok=True)
     return tracks
+
+
+def _hears_drums(ymt3_all: list, seconds: float) -> bool:
+    """Whether YourMT3+ heard the drums well enough to replace the onset classifier.
+
+    It needs the cymbals' high end: on a low-bitrate copy of a trio it heard 3 hits in a
+    minute, on the original 3 a second. Under one hit every two seconds, keep the classifier.
+    """
+    return len(yourmt3.drum_notes(ymt3_all)) >= max(20, 0.5 * seconds)
 
 
 def _yourmt3_all(d: Path) -> list | None:

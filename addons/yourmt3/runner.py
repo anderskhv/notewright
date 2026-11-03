@@ -57,7 +57,10 @@ def main(path: str) -> None:
     from utils.event2note import merge_zipped_note_events_and_ties_to_notes
     from utils.note2event import mix_notes
 
-    model = model_helper.load_model_checkpoint(args=ARGS, device="cpu")
+    # CPU unless told otherwise: the Apple GPU is used only once a test on that Mac showed
+    # the same notes (python -m notewright.ymt3check).
+    device = os.environ.get("NOTEWRIGHT_YOURMT3_DEVICE", "cpu")
+    model = model_helper.load_model_checkpoint(args=ARGS, device=device)
     sys.stdout = stdout
     y, sr = sf.read(path, dtype="float32", always_2d=True)
     audio = torch.from_numpy(y.mean(axis=1)[None, :].copy())
