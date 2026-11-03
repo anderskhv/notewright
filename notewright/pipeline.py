@@ -503,8 +503,10 @@ def _bass(d: Path, name: str, voice: str, parts: dict, paths: dict, sr: int, pia
         tracked = transcribe.monophonic(paths["bass"], *MONO_RANGE["bass"], report)  # without the piano now
     plucks = transcribe.attacks(parts["bass"], sr)
     # The model's starts are already close (17 ms spread); the pitch tracker's run late.
+    low = [n for n in (ymt3_all or []) if not n[5] and n[2] < 55]   # anything YourMT3+ heard down there
     notes = combine_bass(transcribe.snap_to_attacks(heard, plucks, 0.035),
-                         transcribe.snap_to_attacks(tracked, plucks, 0.08))
+                         transcribe.snap_to_attacks(tracked, plucks, 0.08), plucks, low)
+    notes = transcribe.loudness(notes, parts["bass"], sr)
     track = {"id": "bass", "name": name, "voice": voice, "notes": notes, "pedals": []}
     if len(heard) >= 40:
         track["source"] = "yourmt3"
@@ -512,19 +514,28 @@ def _bass(d: Path, name: str, voice: str, parts: dict, paths: dict, sr: int, pia
     return track
 
 
-def combine_bass(heard: list, tracked: list, gap: float = 0.08) -> list:
+def combine_bass(heard: list, tracked: list, plucks: np.ndarray, low: list, gap: float = 0.08) -> list:
     """One bass line from YourMT3+'s bass notes and the pitch tracker's.
 
     YourMT3+ times notes well and hears high ones, but on a walking line it files about
-    half the notes under other instruments. So its notes come first, and the pitch
-    tracker fills in wherever YourMT3+ has no bass note; each note then ends where the
+    half the notes under other instruments. So its bass notes come first, and the pitch
+    tracker fills the gaps, but only with notes that start on a real pluck. Where
+    YourMT3+ did hear a low note there (filed under piano or guitar), its pitch is used:
+    the pitch tracker is the one that slips by an octave. Each note then ends where the
     next one starts (a bass line is one note at a time).
     """
     starts = np.array(sorted(n[0] for n in heard))
     line = [list(n) for n in heard]
     for n in tracked:
-        if not len(starts) or np.min(np.abs(starts - n[0])) > gap:
-            line.append(list(n))
+        if len(starts) and np.min(np.abs(starts - n[0])) <= gap:
+            continue                                   # YourMT3+ has this one
+        if not len(plucks) or np.min(np.abs(plucks - n[0])) > 0.03 or n[1] - n[0] < 0.08:
+            continue                                   # not on a pluck, or a flicker
+        same_time = [m for m in low if abs(m[0] - n[0]) <= 0.05]
+        if same_time:
+            pitch = min(same_time, key=lambda m: abs(m[2] - n[2]))[2]
+            n = [n[0], n[1], pitch, *n[3:]]
+        line.append(list(n))
     line.sort()
     for a, b in zip(line, line[1:]):
         if a[1] > b[0]:

@@ -55,9 +55,22 @@ def test_a_lone_wrong_downbeat_is_ignored():
 def test_combined_bass_line_prefers_yourmt3_and_fills_its_gaps():
     from notewright.pipeline import combine_bass
 
-    heard = [[1.00, 1.30, 40, 80], [2.00, 2.30, 43, 80]]
-    tracked = [[1.02, 1.35, 28, 70],              # the same note, an octave off: YourMT3+ wins
-               [1.50, 1.80, 41, 70],              # missed by YourMT3+: kept
-               [2.20, 2.60, 45, 70]]              # overlaps the next note: trimmed to one at a time
-    line = combine_bass(heard, tracked)
+    heard = [[1.00, 1.30, 40, 1], [2.00, 2.30, 43, 1]]
+    tracked = [[1.02, 1.35, 28, 70],              # the same note: YourMT3+ has it
+               [1.50, 1.80, 29, 70],              # missed by YourMT3+, on a pluck, octave off: its low note's pitch
+               [1.70, 1.75, 50, 70],              # a flicker: dropped
+               [2.20, 2.60, 45, 70],              # on a pluck: kept; overlap trimmed to one note at a time
+               [2.90, 3.20, 47, 70]]              # no pluck there: dropped
+    plucks = np.array([1.0, 1.5, 1.7, 2.0, 2.2])
+    low = [[1.51, 1.8, 41, 1, 0, False]]          # YourMT3+ filed this one under piano
+    line = combine_bass(heard, tracked, plucks, low)
     assert [n[:3] for n in line] == [[1.00, 1.30, 40], [1.50, 1.80, 41], [2.00, 2.20, 43], [2.20, 2.60, 45]]
+
+
+def test_loudness_comes_from_the_audio_for_every_note():
+    sr = 22050
+    t = np.arange(sr * 3) / sr
+    y = np.where(t < 1.5, 0.05, 0.5) * np.sin(2 * np.pi * 110 * t)   # quiet, then loud
+    notes = [[0.5, 0.9, 45, 1], [2.0, 2.4, 45, 1]]
+    soft, loud = transcribe.loudness(notes, y.astype(np.float32), sr)
+    assert soft[3] < loud[3] and loud[3] > 100 and soft[3] > 40

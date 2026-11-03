@@ -47,7 +47,7 @@ _LABELS = {
     "bass_guitar": ["Bass guitar"],
 }
 
-_sed = None
+_sed: dict = {}  # the sound-event model, per device
 
 
 # AudioSet's label list (CC BY 4.0), shipped with Notewright. panns_inference reads
@@ -72,8 +72,7 @@ def _labels_file() -> None:
 
 
 def _model(device: str):
-    global _sed
-    if _sed is None:
+    if device not in _sed:
         import torch
 
         _labels_file()
@@ -88,21 +87,46 @@ def _model(device: str):
             sample_rate=32000, window_size=1024, hop_size=320, mel_bins=64, fmin=50, fmax=14000, classes_num=527
         )
         net.load_state_dict(torch.load(str(path), map_location="cpu", weights_only=True)["model"])
-        net.to(device if device == "cuda" else "cpu").eval()
-        _sed = net
-    return _sed
+        net.to(device).eval()
+        _sed[device] = net
+    return _sed[device]
+
+
+CHUNK_S, CONTEXT_S = 30, 1  # seconds per piece, and the overlap each side that is cut off again
+FPS = 100  # the model's frames per second (hop 320 at 32 kHz)
 
 
 def listen(y32k: np.ndarray, device: str) -> dict[str, np.ndarray]:
-    """Per-frame (100 per second) probability for each label group in _LABELS."""
+    """Per-frame (100 per second) probability for each label group in _LABELS.
+
+    The audio goes through in 30-second pieces, each with a second of context either side
+    that is dropped afterwards: a whole song at once needs several GB, too much for a
+    laptop's GPU, and with the context the pieces join up like a single pass.
+    """
+    from .config import gpu_or_cpu
+
+    return gpu_or_cpu(device, lambda dev: _listen(y32k, dev), "Recognising instruments")
+
+
+def _listen(y32k: np.ndarray, device: str) -> dict[str, np.ndarray]:
     import torch
 
     net = _model(device)
     labels = _labels()
     peak = np.abs(y32k).max() or 1.0
-    x = torch.tensor((y32k / peak * 0.9)[None, :], dtype=torch.float32, device=next(net.parameters()).device)
-    with torch.no_grad():
-        frames = net(x)["framewise_output"][0].cpu().numpy()
+    y = (y32k / peak * 0.9).astype(np.float32)
+    sr, step, ctx = 32000, CHUNK_S * 32000, CONTEXT_S * 32000
+    total = int(len(y) / 320) + 1
+    out = []
+    for a in range(0, max(1, len(y)), step):
+        lo, hi = max(0, a - ctx), min(len(y), a + step + ctx)
+        x = torch.from_numpy(y[lo:hi][None, :]).to(device)
+        with torch.no_grad():
+            frames = net(x)["framewise_output"][0].cpu().numpy()
+        skip = (a - lo) * FPS // sr
+        keep = min(step, len(y) - a) * FPS // sr
+        out.append(frames[skip: skip + keep])
+    frames = np.concatenate(out)[:total]
     return {g: frames[:, [labels.index(n) for n in names]].max(axis=1) for g, names in _LABELS.items()}
 
 

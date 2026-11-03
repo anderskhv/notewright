@@ -206,6 +206,28 @@ def snap_to_attacks(notes: list, times: np.ndarray, window: float) -> list:
     return out
 
 
+def loudness(notes: list, y: np.ndarray, sr: int) -> list:
+    """Give each note a velocity from the part's own level at its start.
+
+    Notes from different sources must sound alike: YourMT3+ reports no dynamics (every
+    velocity is 1) while the pitch tracker measures them, and mixed in one part the
+    player would make one set nearly silent and the other loud.
+    """
+    if not notes:
+        return notes
+    mono = y.mean(axis=0) if y.ndim == 2 else y
+    hop = 256
+    rms = librosa.feature.rms(y=np.asarray(mono, dtype=np.float32), frame_length=1024, hop_length=hop)[0]
+    peak = float(np.percentile(rms, 99)) or 1.0
+    out = []
+    for n in notes:
+        a = int(n[0] * sr / hop)
+        b = max(a + 1, int(min(n[1], n[0] + 0.15) * sr / hop))
+        level = float(rms[a:b].max()) if a < len(rms) else 0.0
+        out.append([n[0], n[1], n[2], int(np.clip(40 + 87 * np.sqrt(min(1.0, level / peak)), 1, 127)), *n[4:]])
+    return out
+
+
 def _merge_glitches(notes: list) -> Notes:
     """Fold pitch flickers (A, tiny B, A) back into one A, unless the second A was re-attacked."""
     out: Notes = []
