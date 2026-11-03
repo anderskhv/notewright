@@ -274,7 +274,7 @@ def run(job: Job) -> None:
         else:
             stems = separate(wav, d / "stems", dev, job.stage("Separating instruments", 0.08, 0.3 if has_ymt3 else 0.4))
             if has_ymt3:
-                notes = yourmt3.transcribe(wav, job.stage("Transcribing with YourMT3+", 0.3, 0.45))
+                notes = yourmt3.transcribe(wav, job.stage("Transcribing with YourMT3+", 0.3, 0.45), dev)
         if has_ymt3:
             (d / "yourmt3.json").write_text(json.dumps(notes))
         # Keep Demucs' own stems, so the line-up can be changed later without separating again.
@@ -388,7 +388,7 @@ def _separate_and_ymt3(job: Job, wav: Path, dev: str) -> tuple[dict, list]:
         return update
 
     with ThreadPoolExecutor(1) as pool:
-        future = pool.submit(yourmt3.transcribe, wav, part("yourmt3"))
+        future = pool.submit(yourmt3.transcribe, wav, part("yourmt3"), dev)
         try:
             stems = separate(wav, job.dir / "stems", dev, part("separate"))
         except BaseException:

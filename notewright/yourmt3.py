@@ -38,11 +38,26 @@ def cancel() -> None:
         proc.kill()
 
 
-def transcribe(wav: Path, progress: Callable[[float], None]) -> list:
+# Where YourMT3+ may run besides the processor: only where a test showed identical notes.
+# Apple GPU (MacBook Air, Ron Carter trio): 563 of 563 notes identical, 1.6x the speed.
+TESTED_GPUS = {"mps"}
+
+
+def transcribe(wav: Path, progress: Callable[[float], None], device: str = "cpu") -> list:
     """All notes YourMT3+ hears: [start, end, pitch, velocity, program, is_drum]."""
+    if device in TESTED_GPUS:
+        try:
+            return _transcribe(wav, progress, device)
+        except RuntimeError as err:
+            print(f"Notewright: YourMT3+ failed on {device} ({err}); running it on the processor instead.", flush=True)
+    return _transcribe(wav, progress, "cpu")
+
+
+def _transcribe(wav: Path, progress: Callable[[float], None], device: str) -> list:
+    env = {**os.environ, "NOTEWRIGHT_YOURMT3_DEVICE": device}
     proc = subprocess.Popen(
         [str(python()), str(ADDON / "runner.py"), str(wav)],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
     )
     _running.add(proc)
     # Read the notes while the progress comes in: a long song's notes don't fit in the pipe,

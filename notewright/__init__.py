@@ -14,4 +14,4 @@ if _bin not in os.environ.get("PATH", "").split(os.pathsep):
 # instead of failing. Must be set before torch is imported.
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
-__version__ = "0.11.2"
+__version__ = "0.11.3"
