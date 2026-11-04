@@ -210,14 +210,33 @@ def requeue(job_id: str, **changes) -> dict:
     return job.record
 
 
+MIDI_VERSION = 2  # 2: each part on its own instrument (sax was written as piano, upright as electric)
+
+
+def _rewrite_midi(d: Path, result: dict) -> None:
+    """Write a song's MIDI again from its parts, once per MIDI_VERSION."""
+    marker = d / f"midi-v{MIDI_VERSION}"
+    if marker.exists() or not result.get("tracks"):
+        return
+    num, den = (int(x) for x in str(result.get("timeSignature", "4/4")).split("/"))
+    compound = den == 8 and num in (6, 9, 12)
+    meter = notation.Meter(num // 3 if compound else num, compound)
+    notation.write_midi(result["tracks"], float(result.get("bpm") or 100), meter, d / result.get("midi", "transcription.mid"))
+    marker.touch()
+
+
 def upgrade_old_jobs() -> None:
-    """Jobs made before 0.2 have MP3 browser copies; re-encode them once (see audio.py)."""
+    """Bring older songs up to date once: MP3 browser copies (before 0.2), MIDI instruments."""
     for rec in list_jobs():
         d = jobs_dir() / rec["id"]
         result_path = d / "result.json"
         if rec["status"] != "done" or not result_path.exists():
             continue
         result = json.loads(result_path.read_text())
+        try:
+            _rewrite_midi(d, result)
+        except Exception:  # noqa: BLE001 - the old MIDI still downloads
+            traceback.print_exc()
         if not result.get("audio", "").endswith(".mp3"):
             continue
         try:

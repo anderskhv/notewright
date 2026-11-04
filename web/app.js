@@ -206,6 +206,8 @@ function openSong(result, base) {
     + (result.tracks.length > 1 ? ` · ${parts} parts transcribed` : "");
   $("duration").textContent = fmt(result.duration);
   $("dl-midi").href = base + result.midi;
+  $("dl-midi-head").href = base + result.midi;
+  $("dl-midi-head").download = `${result.title.replace(/[\\/:*?"<>|]+/g, "").trim() || "notewright"}.mid`;
 
   player.load(result, base, isScore ? null : `/api/jobs/${result.id}/envelope`);
   player.setRate($("speed").value / 100);

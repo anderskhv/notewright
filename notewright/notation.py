@@ -335,6 +335,9 @@ def write_musicxml(notes, beats, meter: Meter, bpm, title, instrument, path: Pat
 
 
 GM_PROGRAMS = {"piano": 0, "guitar": 25, "bass": 33, "vocals": 52, "other": 48}
+# By the sound a part plays with, so a DAW or notation program opens it on the right instrument.
+VOICE_PROGRAMS = {"piano": 0, "acoustic_bass": 32, "electric_bass_finger": 33, "tenor_sax": 66, "alto_sax": 65,
+                  "trumpet": 56, "trombone": 57, "clarinet": 71, "flute": 73}
 
 
 def write_midi(tracks: list[dict], bpm: float, meter: Meter, path: Path) -> None:
@@ -346,7 +349,8 @@ def write_midi(tracks: list[dict], bpm: float, meter: Meter, path: Path) -> None
     )
     for t in tracks:
         drum = t["id"] == "drums"
-        inst = pretty_midi.Instrument(program=GM_PROGRAMS.get(t["id"], 0), is_drum=drum, name=t["name"])
+        program = VOICE_PROGRAMS.get(t.get("voice"), GM_PROGRAMS.get(t["id"], 0))
+        inst = pretty_midi.Instrument(program=program, is_drum=drum, name=t["name"])
         for start, end, pitch, vel in t["notes"]:
             inst.notes.append(pretty_midi.Note(velocity=int(vel), pitch=int(pitch), start=float(start), end=float(end)))
         pm.instruments.append(inst)
